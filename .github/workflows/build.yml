@@ -58,23 +58,35 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # رانرهای GitHub خودشان Android SDK دارند؛ این action فقط cmdline-tools و
-      # ANDROID_HOME را قطعی می‌کند تا sdkmanager در دسترس باشد.
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install required SDK packages
+      - name: Install Android SDK packages
         run: |
           set -euo pipefail
-          # sdkmanager ممکن است روی PATH باشد یا فقط زیر ANDROID_HOME — هر دو حالت پوشش داده می‌شود
+          # رانرهای ubuntu خودشان Android SDK دارند، پس هیچ action سومی لازم نیست.
+          # android-actions/setup-android@v3 عمداً استفاده نمی‌شود: آن action بستهٔ
+          # سال‌ها پیش حذف‌شدهٔ `tools` را نصب می‌کند و با «Failed to find package
+          # 'tools'» شکست می‌خورد (در اجرای واقعی همین مخزن در ۲۰۲۶-۱۰-۰۸ دیده شد).
+          if [ -z "${ANDROID_HOME:-}" ] || [ ! -d "${ANDROID_HOME:-}" ]; then
+            ANDROID_HOME="/usr/local/lib/android/sdk"
+          fi
+          if [ ! -d "$ANDROID_HOME" ]; then
+            echo "::error::Android SDK not found (tried $ANDROID_HOME)"; exit 1
+          fi
+          {
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            echo "ANDROID_SDK_ROOT=$ANDROID_HOME"
+          } >> "$GITHUB_ENV"
+
           SDKMANAGER="$(command -v sdkmanager || true)"
           if [ -z "$SDKMANAGER" ]; then
-            SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f 2>/dev/null | sort -V | tail -1 || true)"
+          fi
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager not found under $ANDROID_HOME"; exit 1
           fi
           echo "sdkmanager: $SDKMANAGER   ANDROID_HOME=$ANDROID_HOME"
           yes | "$SDKMANAGER" --licenses > /dev/null || true
-          # اگر رانر از قبل این بسته‌ها را داشته باشد، این مرحله چند ثانیه طول می‌کشد
-          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       - name: Set up Gradle (with dependency cache)
         uses: gradle/actions/setup-gradle@v4
@@ -145,20 +157,35 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
-      - name: Install required SDK packages
+      - name: Install Android SDK packages
         run: |
           set -euo pipefail
-          # sdkmanager ممکن است روی PATH باشد یا فقط زیر ANDROID_HOME — هر دو حالت پوشش داده می‌شود
+          # رانرهای ubuntu خودشان Android SDK دارند، پس هیچ action سومی لازم نیست.
+          # android-actions/setup-android@v3 عمداً استفاده نمی‌شود: آن action بستهٔ
+          # سال‌ها پیش حذف‌شدهٔ `tools` را نصب می‌کند و با «Failed to find package
+          # 'tools'» شکست می‌خورد (در اجرای واقعی همین مخزن در ۲۰۲۶-۱۰-۰۸ دیده شد).
+          if [ -z "${ANDROID_HOME:-}" ] || [ ! -d "${ANDROID_HOME:-}" ]; then
+            ANDROID_HOME="/usr/local/lib/android/sdk"
+          fi
+          if [ ! -d "$ANDROID_HOME" ]; then
+            echo "::error::Android SDK not found (tried $ANDROID_HOME)"; exit 1
+          fi
+          {
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            echo "ANDROID_SDK_ROOT=$ANDROID_HOME"
+          } >> "$GITHUB_ENV"
+
           SDKMANAGER="$(command -v sdkmanager || true)"
           if [ -z "$SDKMANAGER" ]; then
-            SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f 2>/dev/null | sort -V | tail -1 || true)"
+          fi
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager not found under $ANDROID_HOME"; exit 1
           fi
           echo "sdkmanager: $SDKMANAGER   ANDROID_HOME=$ANDROID_HOME"
           yes | "$SDKMANAGER" --licenses > /dev/null || true
-          # اگر رانر از قبل این بسته‌ها را داشته باشد، این مرحله چند ثانیه طول می‌کشد
-          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       - uses: gradle/actions/setup-gradle@v4
         with:
