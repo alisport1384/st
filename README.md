@@ -2,13 +2,13 @@
 
 [![Build APK](https://github.com/alisport1384/st/actions/workflows/build.yml/badge.svg)](https://github.com/alisport1384/st/actions/workflows/build.yml)
 
-**نسخهٔ ۱٫۳٫۱** — چارت TradingView-وار (زوم دو انگشتی + تمام‌صفحه)، لاگر کامل (`md` + `txt`)،
+**نسخهٔ ۱٫۳٫۲** — چارت TradingView-وار (زوم دو انگشتی + تمام‌صفحه)، لاگر کامل (`md` + `txt`)،
 هشدار «سفارش مسلح شد» و مستندات کامل ساخت از صفر تا صد در پوشهٔ [`docs/`](docs/README_FA.md).
 
 اپ اندروید برای **چارت‌کشی، بک‌تست و تست زندهٔ کاغذی** استراتژی PinReady روی طلا.
 همهٔ محاسبات داخل خود گوشی انجام می‌شود؛ هیچ سرور واسطی وجود ندارد و هیچ کلید API لازم نیست.
 
-> **فایل نصبی آماده:** `GoldPin-1.3.1.apk` (نسخهٔ ۱٫۳٫۱ — امضاشده، قابل نصب روی اندروید ۷ به بالا)
+> **فایل نصبی آماده:** `GoldPin-1.3.2-6.<sha>.apk` (نسخهٔ ۱٫۳٫۲ — امضاشده، قابل نصب روی اندروید ۷ به بالا)
 > مسیر ساخت داخل همین مخزن: `app/build/outputs/apk/release/app-release.apk`
 
 > **۱٫۳٫۱ — رفع باگ:** باد شدن حجم کندل باز در حالت لایو (که نتیجهٔ لایو را از بک‌تست
@@ -65,13 +65,16 @@
 
 ## دانلود مستقیم فایل نصبی (ساده‌ترین راه)
 
-**[GoldPin 1.3.1 — فایل نصبی](https://github.com/alisport1384/st/releases/tag/v1.3.1)**
+صفحهٔ انتشار: **[github.com/alisport1384/st/releases](https://github.com/alisport1384/st/releases)**
 
-لینک مستقیم (بدون نیاز به لاگین):
-<https://github.com/alisport1384/st/releases/download/v1.3.1/GoldPin-1.3.1.5.9b1e5af.apk>
+آخرین نسخهٔ پایدار: **GoldPin 1.3.2** (versionCode 6) — فایل
+`GoldPin-1.3.2-6.<sha>.apk` به‌همراه `sha256` کنارش. لینک‌ها عمومی‌اند و بدون
+لاگین دانلود می‌شوند.
 
-صحت فایل: `sha256sum -c GoldPin-1.3.1.5.9b1e5af.apk.sha256`
-⇒ `dbc4bae6d07b19ad80661db66f9ac22b29f3688bce519652d44f74e7ee50575f`
+صحت فایل دانلودشده:
+```bash
+sha256sum -c GoldPin-1.3.2-6.<sha>.apk.sha256
+```
 
 ## گرفتن فایل نصبی از GitHub Actions (بدون سیستم محلی)
 
@@ -80,7 +83,7 @@
 
 1. تب **Actions** ← آخرین اجرای «Build APK» (یا *Run workflow* ← *Run*).
 2. پایین صفحه ← **Artifacts** ← `GoldPin-1.3.1-apk` را دانلود کن.
-3. از zip بیرون بیاور → `GoldPin-1.3.1-5.<sha>.apk` نصب‌شدنی است (امضاشده ، همراه `sha256`).
+3. از zip بیرون بیاور → `GoldPin-1.3.2-6.<sha>.apk` نصب‌شدنی است (امضاشده ، همراه `sha256`).
 
 برای انتشار ماندگار: `git tag v1.3.1 && git push origin v1.3.1` → فایل در **Releases** قرار می‌گیرد.
 هر اجرای CI امضای APK را با `apksigner` تأیید می‌کند و آزمون‌ها را هم اجرا می‌کند

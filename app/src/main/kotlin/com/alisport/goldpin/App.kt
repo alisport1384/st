@@ -45,6 +45,12 @@ class AppState {
     var lastPriceSource: String = "—"
     var autosaveEveryMs: Long = 120000L
 
+    /** تعداد تیک‌های پشت‌سرهم ناموفق — سرویس با آن فاصلهٔ تیک را به‌صورت نمایی عقب می‌اندازد. */
+    @Volatile var liveFailStreak: Int = 0
+
+    /** چند تیک به‌خاطر «تیک قبلی هنوز در جریان» حذف شده‌اند (نشانهٔ کندی فید). */
+    @Volatile var lastLiveSkips: Long = 0L
+
     /**
      * حالت بک‌تست کامل: آخرین کندل هم بسته حساب می‌شود (دادهٔ تاریخی).
      * در حالت لایو، آخرین کندل «باز» می‌ماند و فقط پس از بسته شدن پردازش می‌شود
@@ -58,7 +64,31 @@ class AppState {
     var autoFullscreen: Boolean = false
     private var appCtx: Context? = null
 
+    /**
+     * نخ «تغییر وضعیت» — موتور، کارگزار و کندل‌ها فقط اینجا عوض می‌شوند (اجرای سریالی).
+     *
+     * ⚠ این executor تک‌نخی و صفش **بدون سقف** است. هر کاری که روی شبکه معطل بماند
+     * و اینجا گذاشته شود، همهٔ کارهای بعدی (ذخیره، بازسازی موتور، خروجی لاگ…) را
+     * پشت سر خود معطل می‌کند ⇒ رابط «فریز» به نظر می‌رسد. پس هیچ I/O شبکه‌ای
+     * نباید روی [io] برود — برای شبکه از [net] استفاده می‌شود.
+     */
     val io = Executors.newSingleThreadExecutor()
+
+    /**
+     * نخ «شبکه» — جدا از [io]. اگر فید کند یا قطع باشد، فقط این نخ معطل می‌شود
+     * و کارهای رابط (ذخیره/بازسازی/خروجی لاگ) روی [io] بدون معطلی انجام می‌شوند.
+     */
+    val net = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "goldpin-net").apply { isDaemon = true }
+    }
+
+    /**
+     * دروازهٔ تیک لایو: حداکثر **یک** تیک در جریان. تیک‌های اضافی حذف می‌شوند
+     * (idempotent‌اند — تیک بعدی همان دنبالهٔ تازه را دوباره می‌گیرد).
+     * بدون این دروازه، با فید کند صف [io] بی‌نهایت رشد می‌کرد.
+     */
+    val liveGate = com.alisport.goldpin.util.CoalescingGate("live")
+
     val main = Handler(Looper.getMainLooper())
     val listeners = ArrayList<() -> Unit>()
 
@@ -119,7 +149,7 @@ class AppState {
     /** راه‌اندازی لاگر و هشدارها + وصل کردن آن‌ها به موتور و کارگزار */
     fun initApp(ctx: Context) {
         appCtx = ctx.applicationContext
-        Log.init(appCtx!!, "1.3.1")
+        Log.init(appCtx!!, "1.3.2")
         Alerts.init(appCtx!!)
         val p = appCtx!!.getSharedPreferences("goldpin", Context.MODE_PRIVATE)
         // مهاجرت ۱٫۱ → ۱٫۲: تمام‌صفحهٔ خودکار دیگر پیش‌فرض نیست؛ تنظیم قدیمی true را یک‌بار خاموش کن.
@@ -306,10 +336,27 @@ class AppState {
         }
     }
 
-    /** به‌روزرسانی زنده: فقط دنبالهٔ داده را می‌گیریم و با سری موجود ادغام می‌کنیم. */
+    /**
+     * به‌روزرسانی زنده: فقط دنبالهٔ داده را می‌گیریم و با سری موجود ادغام می‌کنیم.
+     *
+     * سه لایهٔ محافظ در برابر فریز:
+     *  ۱) [liveGate] — حداکثر یک تیک در جریان؛ تیک‌های اضافی **حذف** می‌شوند تا صف رشد نکند.
+     *  ۲) شبکه روی [net] است نه [io] ⇒ socket معطل، کارهای رابط را گروگان نمی‌گیرد.
+     *  ۳) تغییر وضعیت روی [io] و زیر [stateLock] ⇒ با rebuild() هم‌زمان نمی‌شود.
+     */
     fun updateLiveOnce(notifyDone: Boolean = false, onDone: (String) -> Unit = {}) {
+        // ۱) اگر تیک قبلی هنوز تمام نشده، این تیک حذف می‌شود (نه اینکه در صف بایستد).
+        if (!liveGate.tryAcquire()) {
+            Log.w(Log.CAT_LIVE, "تیک لایو حذف شد — تیک قبلی هنوز در جریان است",
+                "حذف‌شده تاکنون=${liveGate.skipped} (فید کند است؛ تیک بعدی همان دنباله را می‌گیرد)")
+            lastLiveSkips = liveGate.skipped
+            if (notifyDone) onDone("فید کند است — تیک قبلی هنوز در جریان است")
+            return
+        }
         val t0 = System.currentTimeMillis()
-        io.execute {
+        // ۲) شبکه روی نخ جدا
+        net.execute {
+            var handedOff = false
             try {
                 val base = Feed.baseTfFor(chartTfSec)
                 val (interval, range) = Feed.yahooSpec(base, 1)
@@ -320,33 +367,46 @@ class AppState {
                 val last = tail.lastOrNull()?.c ?: Double.NaN
                 Log.d(Log.CAT_LIVE, "به‌روزرسانی زنده",
                     "دنباله=${tail.size} قیمت=${if (spot != null) Fa.n(spot, 2) else "-"} منبع=$spotSrc مدت=${System.currentTimeMillis() - t0}ms")
-                // ⚠ ادغام داده و اجرای موتور روی **نخ پس‌زمینه** انجام می‌شود.
-                // پیش‌تر این کار داخل main.post بود: هم نخ رابط را قفل می‌کرد (فریز/ANR) و هم
-                // با rebuild() که روی نخ IO است هم‌زمان روی engine.setups می‌چرخید
-                // (ConcurrentModificationException). حالا هر دو زیر یک قفل‌اند.
-                synchronized(stateLock) {
-                    mergeTail(tail)
-                    engine.broker = broker
-                    engine.barCommitHook = { cd -> broker.onBar(cd, live = false) }
-                    engine.feed(candles, lastIsClosed = false)
-                    candles.lastOrNull()?.let { broker.onBar(it, live = true) }
-                    publishSnapshot()
+                // ۳) تغییر وضعیت روی نخ سریالی [io]
+                io.execute {
+                    try {
+                        synchronized(stateLock) {
+                            mergeTail(tail)
+                            engine.broker = broker
+                            engine.barCommitHook = { cd -> broker.onBar(cd, live = false) }
+                            engine.feed(candles, lastIsClosed = false)
+                            candles.lastOrNull()?.let { broker.onBar(it, live = true) }
+                            publishSnapshot()
+                        }
+                    } finally {
+                        // دروازه دقیقاً یک‌بار آزاد می‌شود — اینجا، بعد از پایان تغییر وضعیت.
+                        // (پیش از این `handedOff = true` هم اینجا بود که لازم نیست: نخ net
+                        //  بلافاصله پس از enqueue پرچم را true می‌کند.)
+                        liveGate.release()
+                    }
+                    liveFailStreak = 0
+                    main.post {
+                        lastLivePrice = if (spot != null && !spot.isNaN()) spot else last
+                        lastPriceSource = spotSrc
+                        lastFeedAt = System.currentTimeMillis()
+                        lastFeedError = null
+                        notifyUi()
+                        if (notifyDone) onDone("به‌روزرسانی شد · ${com.alisport.goldpin.util.Fa.n(lastLivePrice, 2)}")
+                    }
                 }
-                main.post {
-                    lastLivePrice = if (spot != null && !spot.isNaN()) spot else last
-                    lastPriceSource = spotSrc
-                    lastFeedAt = System.currentTimeMillis()
-                    lastFeedError = null
-                    notifyUi()
-                    if (notifyDone) onDone("به‌روزرسانی شد · ${com.alisport.goldpin.util.Fa.n(lastLivePrice, 2)}")
-                }
+                handedOff = true   // واگذار شد؛ آزادی دروازه به عهدهٔ finally داخل io است
             } catch (e: Exception) {
-                Log.w(Log.CAT_LIVE, "به‌روزرسانی زنده ناموفق", e.message ?: "")
+                liveFailStreak++
+                Log.w(Log.CAT_LIVE, "به‌روزرسانی زنده ناموفق",
+                    "${e.message ?: ""} · پشت‌سرهم=$liveFailStreak")
                 main.post {
                     lastFeedError = e.message ?: "خطای فید"
                     notifyUi()
                     if (notifyDone) onDone("خطای فید: ${lastFeedError}")
                 }
+            } finally {
+                // اگر هیچ‌وقت به io واگذار نشد (خطای شبکه یا صف رد شد)، همین‌جا آزاد کن
+                if (!handedOff) liveGate.release()
             }
         }
     }

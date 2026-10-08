@@ -31,11 +31,20 @@ object Feed {
     const val SYMBOL_DEFAULT = "GC=F"
 
     // ── ابزار HTTP ─────────────────────────────────────────────────────────────
-    private fun get(urlStr: String, timeout: Int = 20000, userAgent: String = UA): String {
+    /**
+     * @param connectMs سقف اتصال و @param readMs سقف خواندن.
+     *
+     * ⚠ این سقف‌ها مستقیماً «بدترین حالت یک تیک لایو» را می‌سازند. پیش‌تر هر دو
+     * ۲۰٬۰۰۰ms بود: ۲ میزبان Yahoo × (۲۰+۲۰) + ۳ منبع قیمت × (۱۲+۱۲) = تا **۱۵۲ ثانیه**
+     * برای یک تیک. با فاصلهٔ پیش‌فرض ۱۰ ثانیه یعنی صف کارها بی‌نهایت رشد می‌کرد.
+     * حالا بدترین حالت ≈ ۲×(۸+۱۲) + ۱۲ = **۵۲ ثانیه** است و `CoalescingGate` هم
+     * نمی‌گذارد تیک‌ها روی هم تلنبار شوند.
+     */
+    private fun get(urlStr: String, connectMs: Int = 8000, readMs: Int = 12000, userAgent: String = UA): String {
         val url = URL(urlStr)
         val conn = url.openConnection() as HttpURLConnection
-        conn.connectTimeout = timeout
-        conn.readTimeout = timeout
+        conn.connectTimeout = connectMs
+        conn.readTimeout = readMs
         conn.instanceFollowRedirects = true
         conn.setRequestProperty("User-Agent", userAgent)
         conn.setRequestProperty("Accept", "application/json,text/csv,*/*")
@@ -124,7 +133,7 @@ object Feed {
     /** نرخ لحظه‌ای طلای نقدی (Spot) — بدون کلید */
     fun goldApiSpot(): Double? {
         return try {
-            val body = get("https://api.gold-api.com/price/XAU", 12000)
+            val body = get("https://api.gold-api.com/price/XAU", connectMs = 5000, readMs = 7000)
             val p = JSONObject(body).optDouble("price", Double.NaN)
             if (p.isNaN()) null else p
         } catch (e: Exception) {
@@ -136,7 +145,7 @@ object Feed {
     /** نرخ XAU/USD از Swissquote (عمومی، بدون کلید) */
     fun swissquoteSpot(): Double? {
         return try {
-            val body = get("https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD", 12000)
+            val body = get("https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD", connectMs = 5000, readMs = 7000)
             val arr = org.json.JSONArray(body)
             val profiles = arr.getJSONObject(0).getJSONArray("spreadProfilePrices")
             val p = profiles.getJSONObject(0)
@@ -152,7 +161,7 @@ object Feed {
     /** نرخ طلای توکنیزه (PAXG) از CoinGecko — پشتیبان سوم */
     fun coinGeckoSpot(): Double? {
         return try {
-            val body = get("https://api.coingecko.com/api/v3/simple/price?ids=pax-gold&vs_currencies=usd", 12000)
+            val body = get("https://api.coingecko.com/api/v3/simple/price?ids=pax-gold&vs_currencies=usd", connectMs = 5000, readMs = 7000)
             val p = JSONObject(body).optJSONObject("pax-gold")?.optDouble("usd", Double.NaN) ?: Double.NaN
             if (p.isNaN()) null else p
         } catch (e: Exception) {
@@ -164,9 +173,17 @@ object Feed {
      * زنجیرهٔ منابع قیمت لحظه‌ای — هر کدام پاسخ داد، همان استفاده می‌شود.
      * (برای شرایطی که یک سرویس در دسترس نباشد.)
      */
-    fun spotPrice(): Pair<Double?, String> {
+    /**
+     * کل زنجیرهٔ قیمت لحظه‌ای حداکثر [budgetMs] میلی‌ثانیه وقت دارد.
+     * بدون این سقف، وقتی هر سه منبع قطع باشند یک تیک لایو ~۳۶ ثانیه فقط برای
+     * قیمت لحظه‌ای معطل می‌ماند (و تیک‌های بعدی پشت آن صف می‌کشند).
+     */
+    fun spotPrice(budgetMs: Long = 12000L): Pair<Double?, String> {
+        val deadline = System.currentTimeMillis() + budgetMs
         goldApiSpot()?.let { Log.d(Log.CAT_FEED, "قیمت لحظه‌ای از gold-api", com.alisport.goldpin.util.Fa.n(it, 2)); return it to "gold-api" }
+        if (System.currentTimeMillis() >= deadline) { Log.w(Log.CAT_FEED, "بودجهٔ قیمت لحظه‌ای تمام شد", "منبع بعدی امتحان نشد"); return null to "کند/ناموفق" }
         swissquoteSpot()?.let { Log.d(Log.CAT_FEED, "قیمت لحظه‌ای از Swissquote", com.alisport.goldpin.util.Fa.n(it, 2)); return it to "Swissquote" }
+        if (System.currentTimeMillis() >= deadline) { Log.w(Log.CAT_FEED, "بودجهٔ قیمت لحظه‌ای تمام شد", "منبع بعدی امتحان نشد"); return null to "کند/ناموفق" }
         coinGeckoSpot()?.let { Log.d(Log.CAT_FEED, "قیمت لحظه‌ای از CoinGecko", com.alisport.goldpin.util.Fa.n(it, 2)); return it to "CoinGecko(PAXG)" }
         Log.w(Log.CAT_FEED, "هیچ منبع قیمت لحظه‌ای پاسخ نداد")
         return null to "ناموفق"

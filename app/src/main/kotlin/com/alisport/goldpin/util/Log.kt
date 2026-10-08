@@ -75,11 +75,26 @@ object Log {
     private var appCtx: Context? = null
     private var session: Session? = null
     private val buffer = ArrayDeque<Entry>()
+
+    /**
+     * نخ اختصاصی نوشتن لاگ.
+     *
+     * پیش‌تر `add()` هم `@Synchronized` بود و هم **داخل همان قفل** روی دیسک می‌نوشت.
+     * یعنی نخ رابط با هر `Log.i` (که روی تقریباً هر دکمه صدا زده می‌شود) منتظر
+     * نوشتن فایلِ نخ لایو می‌ماند — و چون `Log` یک object سراسری است، این قفل
+     * کل اپ را سریالیزه می‌کرد. حالا `add()` فقط رکورد را در بافر می‌گذارد و
+     * نوشتن فایل به این نخ واگذار می‌شود.
+     *
+     * تنها این نخ به [session] دست می‌زند ⇒ بدون قفل هم ایمن است.
+     */
+    private val writer = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "goldpin-log").apply { isDaemon = true }
+    }
     private const val MAX_BUFFER = 6000
     private const val MAX_FILE_BYTES = 1_500_000L
 
     val sessionStart: Long = System.currentTimeMillis()
-    var appVersion: String = "1.3.1"
+    var appVersion: String = "1.3.2"
 
     class Entry(val t: Long, val level: Int, val cat: String, val msg: String, val data: String?)
 
@@ -101,13 +116,18 @@ object Log {
     }
 
     // ── راه‌اندازی ────────────────────────────────────────────────────────────
-    fun init(ctx: Context, version: String = "1.3.1") {
+    fun init(ctx: Context, version: String = "1.3.2") {
         appCtx = ctx.applicationContext
         appVersion = version
+        cachedLogDir = null
         // اگر پوشهٔ لاگ عوض شده باشد (مثلاً پاک شدن حافظه یا اجرای مجدد)،
         // نشست قبلی باطل است و از نو باز می‌شود.
-        try { session?.close() } catch (t: Throwable) { }
-        session = null
+        // ⚠ بستن نشست هم باید روی نخ نوشتن انجام شود، وگرنه با writeEntryِ در حال
+        // اجرا روی همان session مسابقه می‌دهد.
+        awaitWriter(1500L) {
+            try { session?.close() } catch (t: Throwable) { }
+            session = null
+        }
         val p = prefs(ctx)
         enabled = p.getBoolean("log_enabled", false)
         minLevel = p.getInt("log_level", INFO)
@@ -185,15 +205,27 @@ object Log {
                 }
             } catch (t: Throwable) { }
         }
-        if (writeToFile) writeEntry(e)
+        if (writeToFile) {
+            // نوشتن روی دیسک بیرون از قفل و بیرون از نخ فراخوان
+            try { writer.execute { writeEntry(e) } } catch (t: Throwable) { }
+        }
     }
 
     // ── فایل ──────────────────────────────────────────────────────────────────
+    @Volatile private var cachedLogDir: File? = null
+
+    /**
+     * پوشهٔ لاگ — نتیجه کش می‌شود.
+     * `getExternalFilesDir()` یک Binder IPC است و روی نخ رابط می‌تواند چند صد
+     * میلی‌ثانیه طول بکشد؛ `dirPath()` از صفحهٔ تنظیمات (نخ رابط) صدا زده می‌شود.
+     */
     private fun logDir(): File {
+        cachedLogDir?.let { return it }
         val c = appCtx
         val base = if (c != null) (c.getExternalFilesDir(null) ?: c.filesDir) else File("/tmp")
         val d = File(base, "logs")
         if (!d.exists()) d.mkdirs()
+        cachedLogDir = d
         return d
     }
 
@@ -277,22 +309,35 @@ object Log {
 
     private fun mdEsc(x: String): String = x.replace("|", "\\|").replace("\n", " ")
 
-    /** نوشتن همهٔ آنچه در حافظه مانده + بستن فایل‌ها (برای خروجی گرفتن) */
-    @Synchronized
+    /**
+     * نوشتن همهٔ آنچه در صف نوشتن مانده (برای خروجی گرفتن).
+     *
+     * یک کار خالی به انتهای صف [writer] می‌فرستیم و منتظرش می‌مانیم: چون صف FIFO است،
+     * انجام شدن آن یعنی همهٔ رکوردهای قبلی نوشته و flush شده‌اند.
+     * ⚠ عمداً `@Synchronized` نیست — اگر قفل `Log` را نگه داریم و منتظر [writer]
+     * بمانیم، هر `add()` جدیدی روی نخ دیگر تا ابد بلاک می‌شود.
+     */
     fun flush() {
-        session?.let {
-            try { it.mdOut?.flush(); it.txtOut?.flush() } catch (e: Exception) { }
+        awaitWriter(2000L) {
+            session?.let {
+                try { it.mdOut?.flush(); it.txtOut?.flush() } catch (e: Exception) { }
+            }
         }
     }
 
-    @Synchronized
     fun closeSession() {
-        flush()
-        session?.close()
+        awaitWriter(2000L) { session?.close() }
+    }
+
+    /** اجرای [block] روی نخ نوشتن و انتظار برای انجامش (حداکثر [timeoutMs]). */
+    private fun awaitWriter(timeoutMs: Long, block: () -> Unit) {
+        val f = try { writer.submit { block() } } catch (t: Throwable) { return }
+        try { f.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS) } catch (t: Throwable) { }
     }
 
     // ── خروجی ─────────────────────────────────────────────────────────────────
     /** گزارش Markdown از کل بافر حافظه (برای نمایش/اشتراک‌گذاری) */
+    @Synchronized
     fun reportMd(): String {
         val sb = StringBuilder()
         sb.append(mdHeader())
@@ -304,6 +349,7 @@ object Log {
         return sb.toString()
     }
 
+    @Synchronized
     fun reportTxt(): String {
         val sb = StringBuilder()
         sb.append(txtHeader())
@@ -317,6 +363,7 @@ object Log {
         return sb.toString()
     }
 
+    @Synchronized
     fun tail(n: Int = 300): List<String> {
         val last = buffer.toList().takeLast(n.coerceAtLeast(1))
         val f = stampFmt.get()!!
@@ -326,6 +373,7 @@ object Log {
         }
     }
 
+    @Synchronized
     fun count(): Int = buffer.size
 
     @Synchronized

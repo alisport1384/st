@@ -31,6 +31,19 @@ class EngineService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastAutosave = 0L
 
+    /**
+     * حلقهٔ تیک لایو — **fixed-delay، نه fixed-rate**.
+     *
+     * پیش‌تر `postDelayed(this, livePollMs)` بی‌قیدوشراجرا می‌شد: حتی وقتی تیک قبلی
+     * هنوز تمام نشده بود، یک تیک دیگر در صف executor می‌نشست. با فید کند (یا قطعی
+     * شبکه) صف بی‌نهایت رشد می‌کرد و چون ذخیره/بازسازی/خروجی لاگ هم به همان executor
+     * تک‌نخی می‌روند، کل اپ «فریز» می‌شد.
+     *
+     * حالا:
+     *  • `updateLiveOnce` خودش با `CoalescingGate` تیک تکراری را حذف می‌کند؛
+     *  • اگر چند تیک پشت‌سرهم خطا بدهد، فاصله به‌صورت نمایی عقب می‌رود (تا ۵ دقیقه)
+     *    تا روی شبکهٔ قطعی hammering نکنیم و باتری/ترافیک هدر نرود.
+     */
     private val tick = object : Runnable {
         override fun run() {
             try {
@@ -38,13 +51,24 @@ class EngineService : Service() {
                     state.updateLiveOnce()
                     maybeAutosave()
                     updateNotification()
+                } else {
+                    return   // لایو خاموش شده — دیگر تیک بعدی را زمان‌بندی نکن
                 }
             } catch (e: Exception) {
                 // در پس‌زمینه هرگز کرش نکن — فقط لاگ کن
                 Log.e(Log.CAT_LIVE, "خطا در حلقهٔ ارزیابی زنده", e)
             }
-            handler.postDelayed(this, state.livePollMs)
+            handler.postDelayed(this, nextDelayMs())
         }
+    }
+
+    /** فاصلهٔ تیک بعدی: `livePollMs` در حالت سالم، و عقب‌گرد نمایی تا ۵ دقیقه وقتی فید خطا می‌دهد. */
+    private fun nextDelayMs(): Long {
+        val base = state.livePollMs.coerceAtLeast(1000L)
+        val fails = state.liveFailStreak
+        if (fails <= 0) return base
+        val factor = 1L shl (fails - 1).coerceAtMost(5)     // ۱،۲،۴،۸،۱۶،۳۲
+        return (base * factor).coerceAtMost(MAX_BACKOFF_MS)
     }
 
     override fun onCreate() {
@@ -63,6 +87,7 @@ class EngineService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         state.liveRunning = true
+        state.liveFailStreak = 0
         Alerts.liveRunning = true
         Alerts.inBacktest = false
         Log.i(Log.CAT_LIVE, "سرویس ارزیابی زنده شروع شد", "فاصله=${state.livePollMs}ms نماد=${state.symbol}")
@@ -126,6 +151,9 @@ class EngineService : Service() {
         val err = s.lastFeedError
         val line3 = if (err.isNullOrEmpty()) "آخرین به‌روزرسانی: ${Fa.jalali(s.lastFeedAt)}"
         else "خطای فید: $err"
+        val line4 = if (s.liveFailStreak > 0 || s.lastLiveSkips > 0)
+            "فید کند: ${s.liveFailStreak} خطای پشت‌سرهم · ${s.lastLiveSkips} تیک حذف‌شده — فاصلهٔ تیک موقتاً بیشتر می‌شود"
+        else null
 
         val pi = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
@@ -137,7 +165,7 @@ class EngineService : Service() {
             @Suppress("DEPRECATION") Notification.Builder(this)
         return b.setContentTitle("GoldPin · ارزیابی زنده")
             .setContentText(line2)
-            .setStyle(Notification.BigTextStyle().bigText("$line2\n$line3"))
+            .setStyle(Notification.BigTextStyle().bigText(if (line4 == null) "$line2\n$line3" else "$line2\n$line3\n$line4"))
             .setSmallIcon(android.R.drawable.stat_sys_upload_done)
             .setOngoing(true)
             .setContentIntent(pi)
@@ -154,6 +182,8 @@ class EngineService : Service() {
     companion object {
         const val CHANNEL = "goldpin_live"
         const val NOTIF_ID = 4711
+        /** سقف عقب‌گرد نمایی فاصلهٔ تیک وقتی فید خطا می‌دهد */
+        const val MAX_BACKOFF_MS = 5L * 60L * 1000L
 
         fun start(ctx: Context) {
             val i = Intent(ctx, EngineService::class.java)

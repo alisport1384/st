@@ -79,16 +79,38 @@ object Alerts {
     @Volatile var liveRunning = false
 
     private val on = HashMap<String, Boolean>()
-    private var seq = 1000
+
+    /**
+     * شناسهٔ نوتیفیکیشن **به ازای هر نوع هشدار ثابت** است.
+     *
+     * پیش‌تر `seq++` بود: هر هشدار یک نوتیفیکیشن *جدید* می‌ساخت که هیچ‌وقت هم
+     * لغو نمی‌شد. در حالت لایو این یعنی انباشت بی‌نهایت نوتیفیکیشن (اندروید پس از
+     * ~۵۰ نوتیفیکیشن برای هر اپ بقیه را بی‌صدا حذف می‌کند) و ساختن PendingIntent
+     * و Notification برای هر کدام روی نخ لایو. حالا نوتیفیکیشن هر نوع *به‌روز*
+     * می‌شود و تعدادشان به تعداد انواع هشدار (۱۸) محدود می‌ماند.
+     */
+    private val notifIdByKind = HashMap<String, Int>()
+    private var nextNotifId = 4800
+    private fun notifId(kind: String): Int = synchronized(notifIdByKind) {
+        notifIdByKind.getOrPut(kind) { nextNotifId++ }
+    }
 
     /** بنر داخل اپ: (متن، رنگ، نوع) */
     var bannerSink: ((String, Int, String) -> Unit)? = null
 
     class Rec(val t: Long, val kind: String, val title: String, val body: String)
+
+    /**
+     * ⚠ این صف از نخ لایو/موتور **نوشته** و از نخ رابط (بنر، تاریخچهٔ هشدارها)
+     * **خوانده** می‌شود. `ArrayDeque.toList()` روی یک deque در حال تغییر
+     * `ConcurrentModificationException` می‌دهد ⇒ با هر هشدار لایو، باز کردن
+     * تاریخچه یا بنر می‌توانست اپ را بیندازد. پس همهٔ دسترسی‌ها زیر یک قفل‌اند.
+     */
     private val historyList = ArrayDeque<Rec>()
+    private val historyLock = Any()
     private const val MAX_HISTORY = 500
 
-    fun history(): List<Rec> = historyList.toList()
+    fun history(): List<Rec> = synchronized(historyLock) { historyList.toList() }
 
     fun isOn(kind: String): Boolean = on[kind] ?: defaultOn(kind)
 
@@ -172,8 +194,10 @@ object Alerts {
     fun fire(ctx: Context?, kind: String, title: String, body: String, symbol: String? = null) {
         val icon = iconFor(kind)
         // ۱) ثبت در تاریخچه و لاگر — همیشه (حتی اگر هشدار خاموش باشد، لاگ می‌شود)
-        historyList.addLast(Rec(System.currentTimeMillis(), kind, title, body))
-        while (historyList.size > MAX_HISTORY) historyList.removeFirst()
+        synchronized(historyLock) {
+            historyList.addLast(Rec(System.currentTimeMillis(), kind, title, body))
+            while (historyList.size > MAX_HISTORY) historyList.removeFirst()
+        }
         Log.i(Log.CAT_ALERT, "هشدار [${kindFa(kind)}] $title", (body + (symbol?.let { " · $it" } ?: "")).take(400))
 
         if (!enabled || !isOn(kind)) return
@@ -192,8 +216,12 @@ object Alerts {
 
         // ۴) صدا و لرزش (فقط وقتی اپ در حال کار است یا لایو روشن است)
         if (allowNotify && (liveRunning || !inBacktest)) {
-            if (sound) playSound(ctx)
-            if (vibrate) doVibrate(ctx)
+            val now = System.currentTimeMillis()
+            if (now - lastCueAt >= MIN_CUE_GAP_MS) {
+                lastCueAt = now
+                if (sound) playSound(ctx)
+                if (vibrate) doVibrate(ctx)
+            }
         }
     }
 
@@ -229,7 +257,7 @@ object Alerts {
                 if (sound) b.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION))
                 if (vibrate) b.setVibrate(longArrayOf(0, 220, 120, 220))
             }
-            nm.notify(seq++, b.build())
+            nm.notify(notifId(kind), b.build())
             Log.d(Log.CAT_ALERT, "نوتیفیکیشن ارسال شد", "kind=$kind")
         } catch (t: Throwable) {
             Log.e(Log.CAT_ALERT, "ارسال نوتیفیکیشن ناموفق", t)
@@ -251,13 +279,33 @@ object Alerts {
 
     private var ringtone: android.media.Ringtone? = null
 
+    /**
+     * ⚠ کمینه فاصلهٔ بین دو صدا/لرزش. بدون آن، چند هشدار پشت‌سرهم (مثلاً ورود +
+     * TP1 + TP2 در یک کندل) چند Ringtone هم‌زمان می‌ساختند.
+     */
+    private const val MIN_CUE_GAP_MS = 1500L
+    @Volatile private var lastCueAt = 0L
+
+    /**
+     * یک نمونهٔ [android.media.Ringtone] برای کل عمر اپ ساخته و **بازیافت** می‌شود.
+     *
+     * پیش‌تر به ازای *هر* هشدار `RingtoneManager.getRingtone(...)` یک پلیر صوتی
+     * تازه ساخته می‌شد و قبلی فقط `stop()` می‌شد. با هشدارهای پشت‌سرهم در حالت
+     * لایو این یعنی ساخت/دور انداختن مداوم پلیر صوتی.
+     *
+     * توجه: `Ringtone` متد عمومی `release()` **ندارد** (با `javap` روی
+     * `platforms/android-34/android.jar` بررسی شد: فقط play/stop/isPlaying/…)،
+     * پس راه درست، ساختن نمونهٔ جدید نیست بلکه بازیافت همان یک نمونه است.
+     */
     private fun playSound(ctx: Context?) {
         try {
             val c = ctx ?: return
-            ringtone?.stop()
-            val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-            ringtone = RingtoneManager.getRingtone(c, uri)
-            ringtone?.play()
+            val r = ringtone ?: RingtoneManager.getRingtone(
+                c, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+            )?.also { ringtone = it }
+            if (r == null) return
+            if (r.isPlaying) { try { r.stop() } catch (t: Throwable) { } }
+            r.play()
         } catch (t: Throwable) { }
     }
 
@@ -270,5 +318,5 @@ object Alerts {
         )
     }
 
-    fun clearHistory() { historyList.clear() }
+    fun clearHistory() { synchronized(historyLock) { historyList.clear() } }
 }
