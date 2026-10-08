@@ -672,48 +672,71 @@ class MainActivity : Activity() {
     //  ۴) گزارش‌ها
     // ══════════════════════════════════════════════════════════════════════════
     private fun buildReportsScreen(): View {
-        val v = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val kindAtStart = reportKind
         val kinds = arrayOf("روزانه", "هفتگی", "ماهانه", "سالانه")
+        val v = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(Ui.dp(this@MainActivity, 6f), Ui.dp(this@MainActivity, 4f),
+                Ui.dp(this@MainActivity, 6f), Ui.dp(this@MainActivity, 6f))
+        }
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         kinds.forEachIndexed { i, n ->
-            row.addView(Ui.btn(this, n, if (reportKind == i) Palette.accent else Palette.panel2,
-                if (reportKind == i) Palette.txt else Palette.dim, 12f).apply {
+            row.addView(Ui.btn(this, n, if (kindAtStart == i) Palette.accent else Palette.panel2,
+                if (kindAtStart == i) Palette.txt else Palette.dim, 12f).apply {
                 setOnClickListener { reportKind = i; showTab(3) }
             }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
         v.addView(row)
-        val rows = Reports.group(s.broker.trades, reportKind)
-        val sum = Reports.summary(s.broker.trades)
-        val box = Ui.box(this)
-        box.addView(Ui.tv(this, "${kinds[reportKind]} — ${Fa.d(rows.size.toString())} دوره", 12.5f, Palette.gold, true))
-        box.addView(Ui.label(this, "جمع سود/زیان", Fa.signed(sum.net), vColor = if (sum.net >= 0) Palette.up else Palette.down))
-        box.addView(Ui.label(this, "نرخ برد کل", Fa.pct(sum.winRate)))
-        box.addView(Ui.label(this, "ضریب سود کل", Fa.n(sum.profitFactor, 2)))
-        v.addView(box)
+
+        // محاسبهٔ گروه‌ها/خلاصه روی نخ پس‌زمینه؛ تب فوراً پاسخ‌گو می‌ماند.
+        val summaryBox = Ui.box(this)
+        summaryBox.addView(Ui.tv(this, "${kinds[kindAtStart]} — در حال محاسبه…", 12.5f, Palette.gold, true))
+        v.addView(summaryBox)
         val lv = ListView(this)
-        lv.adapter = object : BaseAdapter() {
-            override fun getCount() = rows.size
-            override fun getItem(position: Int) = rows[position]
-            override fun getItemId(position: Int) = position.toLong()
-            override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
-                val r = getItem(position) as Reports.Row
-                return LinearLayout(this@MainActivity).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(Ui.dp(this@MainActivity, 10f), Ui.dp(this@MainActivity, 6f),
-                        Ui.dp(this@MainActivity, 10f), Ui.dp(this@MainActivity, 6f))
-                    addView(Ui.tv(this@MainActivity, "${r.label}   ${Fa.signed(r.net)} دلار", 12.5f,
-                        if (r.net >= 0) Palette.up else Palette.down, true))
-                    addView(Ui.tv(this@MainActivity,
-                        "معامله ${Fa.d(r.trades.toString())} · برد ${Fa.d(r.wins.toString())} · باخت ${Fa.d(r.losses.toString())} · " +
-                            "نرخ برد ${Fa.pct(r.winRate)} · PF ${Fa.n(r.profitFactor, 2)} · میانگین R ${Fa.n(r.avgR, 2)} · افت ${Fa.n(r.maxDD, 1)}",
-                        10.5f, Palette.dim))
+        v.addView(lv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        val export = Ui.btn(this, "در حال آماده‌سازی خروجی…", Palette.panel2, Palette.dim, 11f).apply {
+            isEnabled = false
+        }
+        v.addView(export)
+
+        s.io.execute {
+            val snapshot = s.broker.trades.toList()
+            val rows = Reports.group(snapshot, kindAtStart)
+            val sum = Reports.summary(snapshot)
+            runOnUiThread {
+                if (isFinishing || v.parent == null) return@runOnUiThread
+                summaryBox.removeAllViews()
+                summaryBox.addView(Ui.tv(this, "${kinds[kindAtStart]} — ${Fa.d(rows.size.toString())} دوره",
+                    12.5f, Palette.gold, true))
+                summaryBox.addView(Ui.label(this, "جمع سود/زیان", Fa.signed(sum.net),
+                    vColor = if (sum.net >= 0) Palette.up else Palette.down))
+                summaryBox.addView(Ui.label(this, "نرخ برد کل", Fa.pct(sum.winRate)))
+                summaryBox.addView(Ui.label(this, "ضریب سود کل", Fa.n(sum.profitFactor, 2)))
+                lv.adapter = object : BaseAdapter() {
+                    override fun getCount() = rows.size
+                    override fun getItem(position: Int) = rows[position]
+                    override fun getItemId(position: Int) = position.toLong()
+                    override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
+                        val r = rows[position]
+                        return LinearLayout(this@MainActivity).apply {
+                            orientation = LinearLayout.VERTICAL
+                            setPadding(Ui.dp(this@MainActivity, 10f), Ui.dp(this@MainActivity, 6f),
+                                Ui.dp(this@MainActivity, 10f), Ui.dp(this@MainActivity, 6f))
+                            addView(Ui.tv(this@MainActivity, "${r.label}   ${Fa.signed(r.net)} دلار", 12.5f,
+                                if (r.net >= 0) Palette.up else Palette.down, true))
+                            addView(Ui.tv(this@MainActivity,
+                                "معامله ${Fa.d(r.trades.toString())} · برد ${Fa.d(r.wins.toString())} · باخت ${Fa.d(r.losses.toString())} · " +
+                                    "نرخ برد ${Fa.pct(r.winRate)} · PF ${Fa.n(r.profitFactor, 2)} · میانگین R ${Fa.n(r.avgR, 2)} · افت ${Fa.n(r.maxDD, 1)}",
+                                10.5f, Palette.dim))
+                        }
+                    }
                 }
+                export.isEnabled = true
+                export.text = "خروجی CSV این گزارش"
+                export.setTextColor(Palette.txt)
+                export.setOnClickListener { exportReportCsv(rows, kinds[kindAtStart]) }
             }
         }
-        v.addView(lv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        v.addView(Ui.btn(this, "خروجی CSV این گزارش", Palette.panel2, Palette.txt, 11f).apply {
-            setOnClickListener { exportReportCsv(rows, kinds[reportKind]) }
-        })
         return v
     }
 
