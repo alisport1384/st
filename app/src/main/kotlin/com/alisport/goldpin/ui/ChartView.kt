@@ -121,6 +121,14 @@ class ChartView @JvmOverloads constructor(
     var onInfo: ((String) -> Unit)? = null
     var onNeedOlder: (() -> Unit)? = null
     var onContextMenu: (() -> Unit)? = null
+
+    /**
+     * مدت نگه‌داشتن انگشت برای باز شدن منوی چارت.
+     *
+     * پیش‌تر ۴۲۰ms بود که با ژست‌های کشیدن/زوم تداخل می‌کرد و منو ناخواسته باز
+     * می‌شد. به درخواست کاربر ۲ ثانیه اضافه شد ⇒ ۲۴۲۰ms.
+     */
+    var longPressMs: Long = 2420L
     var onGesture: ((String) -> Unit)? = null
 
     // ── ابعاد ──────────────────────────────────────────────────────────────────
@@ -491,6 +499,16 @@ class ChartView @JvmOverloads constructor(
             }
 
             MotionEvent.ACTION_MOVE -> {
+                // ⚠ کشیدن **تک‌انگشتی** هم باید تایمر لمس طولانی را لغو کند. پیش‌تر
+                // فقط `pointerCount >= 2` لغو می‌کرد، یعنی یک پنِ آرامِ تک‌انگشتی پس از
+                // گذشت آستانه، ناخواسته منوی چارت را باز می‌کرد. با زیاد شدن آستانه به
+                // ۲۴۲۰ms این حالت خیلی محتمل‌تر شد، پس با عبور از touch-slop لغو می‌شود.
+                if (event.pointerCount < 2) {
+                    val slop = Ui.dp(context, 10f).toFloat()
+                    if (abs(event.x - downX) > slop || abs(event.y - downY) > slop) {
+                        cancelPendingLongPress()
+                    }
+                }
                 if (event.pointerCount >= 2) {
                     cancelPendingLongPress()
                     val dist = spacing(event)
@@ -623,14 +641,17 @@ class ChartView @JvmOverloads constructor(
         cancelPendingLongPress()
         val r = Runnable {
             crossOn = true
-            crossX = x.coerceIn(0f, plotW - 1f)
-            crossY = y.coerceIn(0f, chartH - timeH - 1f)
+            // ⚠ `coerceIn(min, max)` وقتی max < min باشد IllegalArgumentException می‌دهد.
+            // اگر لمس طولانی پیش از اولین layout اتفاق بیفتد (plotW == 0)، همین‌جا کرش
+            // می‌کرد. حالا کران پایینِ بازه صفر تضمین می‌شود.
+            crossX = x.coerceIn(0f, maxOf(0f, plotW - 1f))
+            crossY = y.coerceIn(0f, maxOf(0f, chartH - timeH - 1f))
             updateHover()
             invalidate()
             onContextMenu?.invoke()
         }
         longPressRunnable = r
-        postDelayed(r, 420)
+        postDelayed(r, longPressMs)
     }
 
     private fun cancelPendingLongPress() {

@@ -51,6 +51,9 @@ class MainActivity : Activity() {
     private lateinit var root: LinearLayout
     private lateinit var header: LinearLayout
     private lateinit var content: FrameLayout
+
+    /** دسترسی آزمایش به ظرف محتوا (برای سنجش padding تمام‌صفحه). */
+    internal val contentForTest: FrameLayout get() = content
     private lateinit var tabButtons: LinearLayout
     private lateinit var headerPrice: TextView
     private lateinit var headerStatus: TextView
@@ -298,11 +301,37 @@ class MainActivity : Activity() {
                 window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
             }
         }
+        applyFullscreenTopInset(on)
         if (tab == 0) {
             // نوار پایین/بالا و پنل رخدادها باید با حالت تمام‌صفحه هم‌گام شوند
             content.removeAllViews()
             content.addView(buildChartScreen())
             refreshCurrent(force = true)
+        }
+    }
+
+    /**
+     * در تمام‌صفحه، `header` و `tabButtons` پنهان می‌شوند و `content` کل صفحه را
+     * می‌گیرد؛ چون پنجره هم‌زمان edge-to-edge می‌شود، نوار ابزار چارت
+     * («آخرین کندل»، «تنظیم نما»، «تنظیمات») زیر **نوار وضعیت** می‌رفت و دیده
+     * نمی‌شد — روی برخی دستگاه‌ها نوار وضعیت کاملاً پنهان هم نمی‌شود و با کشیدن
+     * انگشت موقتاً برمی‌گردد.
+     *
+     * حالا به اندازهٔ ارتفاع نوار وضعیت به بالای `content` padding داده می‌شود تا
+     * نوار ابزار همیشه پایین‌تر از آن بماند، و در خروج از تمام‌صفحه صفر می‌شود.
+     */
+    internal fun applyFullscreenTopInset(on: Boolean) {
+        val top = if (on) statusBarHeightPx() else 0
+        content.setPadding(content.paddingLeft, top, content.paddingRight, content.paddingBottom)
+    }
+
+    /** ارتفاع نوار وضعیت از منابع سیستم؛ اگر پیدا نشد صفر (یعنی بدون تغییر). */
+    internal fun statusBarHeightPx(): Int {
+        return try {
+            val id = resources.getIdentifier("status_bar_height", "dimen", "android")
+            if (id > 0) resources.getDimensionPixelSize(id) else 0
+        } catch (t: Throwable) {
+            0
         }
     }
 
