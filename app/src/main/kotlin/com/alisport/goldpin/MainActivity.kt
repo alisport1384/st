@@ -84,19 +84,17 @@ class MainActivity : Activity() {
     // ══════════════════════════════════════════════════════════════════════════
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Log.i(Log.CAT_APP, "MainActivity ساخته شد", "نسخهٔ ۱٫۳")
+        Log.i(Log.CAT_APP, "MainActivity ساخته شد", "نسخهٔ ${appVersionName()}")
         AppState.init(applicationContext)
         Alerts.bannerSink = { text, color, kind -> showBanner(text, color, kind) }
         buildShell()
         s.onChange(uiListener)
-        val msg = s.loadFromAutoFile(applicationContext)
-        if (!msg.startsWith("بازیابی")) {
-            Log.w(Log.CAT_APP, "فایل ذخیره پیدا نشد → بارگذاری دادهٔ نمونه")
-            s.loadSample(applicationContext) { m -> toast(m) }
-        } else {
-            toast(msg)
-        }
         showTab(0)
+        // بازیابی وضعیت در پس‌زمینه — پیش‌تر همگام روی نخ رابط بود و بالا آمدن اپ را فریز می‌کرد
+        s.restoreOrSample(applicationContext) { m ->
+            toast(m)
+            refreshCurrent(force = true)
+        }
         // تمام‌صفحه دیگر اجباری نیست؛ فقط اگر کاربر در تنظیمات ⓪ روشن کرده باشد
         if (s.autoFullscreen) {
             Log.i(Log.CAT_UI, "ورود خودکار به تمام‌صفحه (تنظیمات ⓪ روشن است)")
@@ -203,6 +201,8 @@ class MainActivity : Activity() {
      * نخ رابط را قفل نکند؛ و هر تب فقط وقتی داده‌اش عوض شده بازسازی می‌شود.
      */
     private fun refreshCurrent(force: Boolean = false) {
+        // محافظ ورود تودرتو: بازسازی تب از داخل خودش (showTab → refreshCurrent) ممکن است
+        if (refreshing) return
         val now = android.os.SystemClock.uptimeMillis()
         if (!force && now - lastRefreshAt < 300) {
             if (!refreshQueued) {
@@ -212,7 +212,6 @@ class MainActivity : Activity() {
             return
         }
         lastRefreshAt = now
-        if (refreshing) return
         refreshing = true
         try {
             headerPrice.text = if (s.lastLivePrice.isNaN()) "—" else Fa.n(s.lastLivePrice, 2)
@@ -650,7 +649,7 @@ class MainActivity : Activity() {
         v.addView(box)
         val eq = EquityChartView(this)
         eq.setData(pnlTrades, s.cfg.initialEquity)
-        eq.onPick = { idx -> pnlTrades.getOrNull(idx)?.let { showTradeDialog(it) } }
+        eq.onPick = { t -> showTradeDialog(t) }
         v.addView(eq, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 185f)))
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row.addView(Ui.btn(this, "بازگشت زوم", Palette.panel2, Palette.txt, 11f).apply { setOnClickListener { eq.resetZoom() } })
@@ -797,7 +796,7 @@ class MainActivity : Activity() {
             showTab(4)
         })
         v.addView(switchRow("نوشتن در فایل (.md و .txt)", Log.writeToFile) { b -> Log.setWriteToFile(this, b) })
-        v.addView(switchRow("نمایش در Logcat", false) { b -> Log.setLogcat(this, b) })
+        v.addView(switchRow("نمایش در Logcat", Log.logcat) { b -> Log.setLogcat(this, b) })
         v.addView(numRow("حداقل سطح (۰ ریز · ۱ اشکال‌زدایی · ۲ اطلاع · ۳ هشدار · ۴ خطا)", Log.minLevel.toDouble()) { d ->
             Log.setLevel(this, d.toInt().coerceIn(0, 4)); showTab(4)
         })
@@ -924,7 +923,7 @@ class MainActivity : Activity() {
 
         // ── درباره ──
         v.addView(Ui.section(this, "⑨ دربارهٔ اپ"))
-        v.addView(Ui.tv(this, "GoldPin نسخهٔ ۱٫۱\n" +
+        v.addView(Ui.tv(this, "GoldPin نسخهٔ ${Fa.d(appVersionName())}\n" +
             "موتور: کندل مهم → Ready → pin → روند → ناحیهٔ فیکس‌رنج (الگوریتم v2) → تایید میانی → ولوم کم (تریگر۱) → ولوم زیاد (تریگر۲) → ورود/حدضرر/TP1 ۳۸٪/TP2 ۵۰٪/حدسود ۱٫۲۷۲\n" +
             "معاملات کاغذی است؛ به کارگزار وصل نیست. همهٔ محاسبات داخل گوشی انجام می‌شود.\n" +
             "مستندات کامل پروژه در پوشهٔ docs مخزن گیت‌هاب است.", 10.5f, Palette.dim))
@@ -1267,6 +1266,12 @@ class MainActivity : Activity() {
         }
         refreshCurrent()
     }
+
+    /** نسخهٔ واقعی APK — تا متن «دربارهٔ اپ» هیچ‌وقت از versionName عقب نماند. */
+    private fun appVersionName(): String = try {
+        @Suppress("DEPRECATION")
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+    } catch (e: Exception) { "?" }
 
     private fun toast(msg: String) {
         android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show()

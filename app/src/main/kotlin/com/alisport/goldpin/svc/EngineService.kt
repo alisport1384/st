@@ -78,7 +78,9 @@ class EngineService : Service() {
         try { wakeLock?.release() } catch (e: Exception) { }
         state.liveRunning = false
         Alerts.liveRunning = false
-        state.saveToAutoFile(this)
+        // ذخیره روی نخ پس‌زمینه: نوشتن gzip یک وضعیت چند مگابایتی روی نخ اصلی = ANR
+        val app = applicationContext
+        state.io.execute { state.saveToAutoFile(app) }
         state.notifyUi()
         super.onDestroy()
     }

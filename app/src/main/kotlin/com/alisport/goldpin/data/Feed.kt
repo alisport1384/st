@@ -254,14 +254,15 @@ object Feed {
                 first = false
                 if (line.contains("open", true) || line.contains("timestamp", true)) continue
             }
-            val p = line.split(',', ';', '\t')
+            // ستون‌های داخل " " هم پذیرفته می‌شوند (خروجی برخی ابزارها CSV نقل‌قول‌دار می‌دهند)
+            val p = line.split(',', ';', '\t').map { it.trim().trim('"', '\'') }
             if (p.size < 5) continue
-            val t = p[0].trim().toLongOrNull() ?: continue
-            val o = p[1].trim().toDoubleOrNull() ?: continue
-            val h = p[2].trim().toDoubleOrNull() ?: continue
-            val l = p[3].trim().toDoubleOrNull() ?: continue
-            val c = p[4].trim().toDoubleOrNull() ?: continue
-            val v = if (p.size >= 6) (p[5].trim().toDoubleOrNull() ?: 0.0) else 0.0
+            val t = p[0].toLongOrNull() ?: continue
+            val o = p[1].toDoubleOrNull() ?: continue
+            val h = p[2].toDoubleOrNull() ?: continue
+            val l = p[3].toDoubleOrNull() ?: continue
+            val c = p[4].toDoubleOrNull() ?: continue
+            val v = if (p.size >= 6) (p[5].toDoubleOrNull() ?: 0.0) else 0.0
             val ms = if (t < 100_000_000_000L) t * 1000L else t
             out.add(Candle(bi++, ms, o, h, l, c, v))
         }

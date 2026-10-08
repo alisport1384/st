@@ -30,8 +30,14 @@ class EquityChartView @JvmOverloads constructor(
     private var trades: List<Trade> = emptyList()
     private var initial = 10000.0
     private var pts: List<Pair<Long, Double>> = emptyList()
+    /**
+     * معاملات بسته، **به همان ترتیبی که Reports.equityCurve نقطه می‌سازد** (مرتب بر اساس exitT).
+     * پیش‌تر ایندکس نقطه مستقیم به فهرست `trades` (ترتیب ساخت) نگاشت می‌شد؛ هر جا ترتیب ساخت
+     * با ترتیب خروج فرق می‌کرد، لمس یک نقطه جزئیات معاملهٔ اشتباهی را باز می‌کرد.
+     */
+    private var ordered: List<Trade> = emptyList()
 
-    var onPick: ((Int) -> Unit)? = null
+    var onPick: ((Trade) -> Unit)? = null
 
     /** تعداد نقاط قابل نمایش (زوم) */
     private var visibleFrom = 0
@@ -62,6 +68,7 @@ class EquityChartView @JvmOverloads constructor(
     fun setData(trades: List<Trade>, initialEquity: Double) {
         this.trades = trades
         this.initial = initialEquity
+        this.ordered = trades.filter { !it.open && it.exitT != null }.sortedBy { it.exitT }
         pts = Reports.equityCurve(trades, initialEquity)
         visibleFrom = 0
         visibleTo = max(0, pts.size - 1)
@@ -127,7 +134,7 @@ class EquityChartView @JvmOverloads constructor(
         val idx = visibleFrom + ((x / w) * n).toInt().coerceIn(0, n)
         // نقطهٔ ۰ = شروع؛ معاملهٔ i برابر نقطهٔ i+1
         val tradeIdx = idx - 1
-        if (tradeIdx in trades.indices) onPick?.invoke(tradeIdx)
+        ordered.getOrNull(tradeIdx)?.let { onPick?.invoke(it) }
     }
 
     private fun axisW(): Float = Ui.dp(context, 58f).toFloat()

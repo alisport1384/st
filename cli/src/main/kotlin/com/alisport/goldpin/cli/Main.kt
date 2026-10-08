@@ -30,25 +30,36 @@ fun main(args: Array<String>) {
     if (csv.isEmpty()) { println("--csv لازم است"); return }
 
     val lines = File(csv).readLines()
-    val header = lines.first()
-    val hasVolume = header.contains("volume", true)
+    // سرصفحه اختیاری است و ستون‌ها ممکن است داخل " " باشند (خروجی دوکاس‌کپی).
+    // پیش‌تر p[0].toLong() روی اولین ردیفِ غیرعددی NumberFormatException می‌داد و کل بک‌تست می‌مرد.
+    val hasVolume = lines.firstOrNull()?.contains("volume", true) == true
     val candles = ArrayList<Candle>(lines.size)
     var bi = 0
-    for (k in 1 until lines.size) {
-        val p = lines[k].split(',')
-        if (p.size < 5) continue
-        val t = p[0].toLong()
-        val o = p[1].toDouble(); val h = p[2].toDouble()
-        val l = p[3].toDouble(); val c = p[4].toDouble()
-        var v = if (hasVolume && p.size >= 6) p[5].toDouble() else 0.0
+    var skipped = 0
+    /** یک ردیف CSV → کندل؛ اگر ردیف معتبر نبود null (به‌جای پرتاب استثنا). */
+    fun parseRow(ln: String): Candle? {
+        val p = ln.split(',').map { it.trim().trim('"', '\'') }
+        if (p.size < 5) return null
+        val t = p[0].toLongOrNull() ?: return null
+        val o = p[1].toDoubleOrNull() ?: return null
+        val h = p[2].toDoubleOrNull() ?: return null
+        val l = p[3].toDoubleOrNull() ?: return null
+        val c = p[4].toDoubleOrNull() ?: return null
+        var v = if (hasVolume && p.size >= 6) (p[5].toDoubleOrNull() ?: 0.0) else 0.0
         if (vol == "synthetic" || (vol == "auto" && v <= 0.0)) {
             // حجم مصنوعی: دامنهٔ کندل (رگرسیون سرانگشتی وقتی فید حجم ندارد)
             v = (h - l) * 1000.0 + 1.0
         }
-        candles.add(Candle(bi++, t, o, h, l, c, v))
+        return Candle(0, t, o, h, l, c, v)
+    }
+    for (ln in lines) {
+        val cd = parseRow(ln)
+        if (cd == null) { if (ln.isNotBlank()) skipped++; continue }
+        candles.add(Candle(bi++, cd.t, cd.o, cd.h, cd.l, cd.c, cd.v))
         if (candles.size >= maxRows) break
     }
-    println("کندل‌های بارگذاری‌شده: ${candles.size}   حجم واقعی: ${hasVolume && vol != "synthetic"}")
+    if (candles.isEmpty()) { println("هیچ کندل معتبری در $csv پیدا نشد (قالب: timestamp,open,high,low,close[,volume])"); return }
+    println("کندل‌های بارگذاری‌شده: ${candles.size}   حجم واقعی: ${hasVolume && vol != "synthetic"}   ردیف ردشده: $skipped")
 
     val cfg = Settings().apply {
         this.vpRows = rows; this.vpSmooth = smooth; this.tfMode = tfMode

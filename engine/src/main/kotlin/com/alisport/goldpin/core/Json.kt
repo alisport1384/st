@@ -135,7 +135,14 @@ object Json {
                     when (val e = s[i]) {
                         'n' -> sb.append('\n'); 'r' -> sb.append('\r'); 't' -> sb.append('\t')
                         'b' -> sb.append('\b'); 'f' -> sb.append('\u000C')
-                        'u' -> { sb.append(s.substring(i + 1, i + 5).toInt(16).toChar()); i += 4 }
+                        'u' -> {
+                            // رشتهٔ بریده (فایل ذخیرهٔ ناتمام) نباید استثنا بدهد
+                            if (i + 5 <= s.length) {
+                                val hex = s.substring(i + 1, i + 5)
+                                val cp = hex.toIntOrNull(16)
+                                if (cp != null) { sb.append(cp.toChar()); i += 4 } else sb.append('u')
+                            } else sb.append('u')
+                        }
                         else -> sb.append(e)
                     }
                     i++

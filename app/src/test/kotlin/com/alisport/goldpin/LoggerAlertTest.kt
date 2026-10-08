@@ -135,19 +135,41 @@ class LoggerAlertTest {
         var bannerText = ""
         Alerts.bannerSink = { t, _, _ -> bannerText = t }
 
-        Alerts.fire(ctx, Alerts.K_ARMED, "سفارش خرید آماده شد", "ورود ۴۱۲۸٫۵۰ · حدضرر ۴۱۲۶٫۱۰", "st=1")
-        val h = Alerts.history()
-        assertTrue("هشدار باید در تاریخچه ثبت شود", h.isNotEmpty())
-        assertEquals(Alerts.K_ARMED, h.last().kind)
-        assertEquals("سفارش خرید آماده شد", h.last().title)
-        assertTrue("بنر باید فراخوانی شود", bannerText.contains("سفارش خرید آماده شد"))
+        // ── جداسازی تست ────────────────────────────────────────────────────────
+        // `Alerts` و `AppState` سراسری‌اند و همهٔ کلاس‌های تست در یک JVM اجرا می‌شوند.
+        // اکتیویتیِ ساخته‌شده در تست‌های دیگر، بازسازی موتور را روی نخ `AppState.io`
+        // رها می‌کند و آن بازسازی هم‌زمان هشدارهای واقعی (PIN/ARMED/…) در همان تاریخچه
+        // ثبت می‌کند — حتی با **همان عنوان** «سفارش خرید آماده شد». برای اینکه آزمون
+        // قطعی بماند، در طول این تست قلاب هشدار موتور/کارگزار را موقتاً قطع می‌کنیم.
+        val st = AppState.instance
+        val engSink = st.engine.alertSink
+        val brkSink = st.broker.alertSink
+        val prevInBacktest = Alerts.inBacktest
+        st.engine.alertSink = null
+        st.broker.alertSink = null
+        // بازسازی پس‌زمینهٔ تست‌های دیگر این پرچم سراسری را لحظه‌ای true می‌کند و
+        // در آن حالت بنر/نوتیفیکیشن پخش نمی‌شود؛ برای قطعی بودن آزمون صریحاً false می‌کنیم.
+        Alerts.inBacktest = false
+        try {
+            Alerts.fire(ctx, Alerts.K_ARMED, "سفارش خرید آماده شد", "ورود ۴۱۲۸٫۵۰ · حدضرر ۴۱۲۶٫۱۰", "st=1")
+            // رکورد خودمان را با بدنهٔ یکتایش پیدا می‌کنیم (نه با «آخرین رکورد تاریخچه»)
+            val mine = Alerts.history().firstOrNull { it.body.contains("۴۱۲۸٫۵۰") }
+            assertNotNull("هشدار باید در تاریخچه ثبت شود", mine)
+            assertEquals(Alerts.K_ARMED, mine!!.kind)
+            assertEquals("سفارش خرید آماده شد", mine.title)
+            assertTrue("بنر باید فراخوانی شود", bannerText.contains("سفارش خرید آماده شد"))
 
-        // خاموش کردن یک نوع → نباید بنر بیاید
-        Alerts.setKind(ctx, Alerts.K_ARMED, false)
-        bannerText = ""
-        Alerts.fire(ctx, Alerts.K_ARMED, "دوباره", "تست")
-        assertTrue("این نوع خاموش است", bannerText.isEmpty())
-        Alerts.bannerSink = null
+            // خاموش کردن یک نوع → نباید بنر بیاید
+            Alerts.setKind(ctx, Alerts.K_ARMED, false)
+            bannerText = ""
+            Alerts.fire(ctx, Alerts.K_ARMED, "دوباره", "تست")
+            assertTrue("این نوع خاموش است", bannerText.isEmpty())
+        } finally {
+            st.engine.alertSink = engSink
+            st.broker.alertSink = brkSink
+            Alerts.inBacktest = prevInBacktest
+            Alerts.bannerSink = null
+        }
     }
 
     // ── ۶) ژست پینچ دو انگشتی → زوم هم‌زمان زمان و قیمت ───────────────────────

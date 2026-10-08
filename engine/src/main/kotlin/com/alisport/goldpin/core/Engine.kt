@@ -185,14 +185,22 @@ class Engine(val cfg: Settings) {
     }
 
     // ── پیش‌نمایش کندل باز (بدون تغییر وضعیت) ────────────────────────────────────
+    /**
+     * ⚠ این متد **هیچ** تغییری در وضعیت موتور نمی‌دهد.
+     *
+     * پیش‌تر کندل باز هم در تجمیع‌کننده‌ها ([aggS]/[aggM]/[agg1]) گام می‌زد. چون فید زنده
+     * هر چند ثانیه همان کندل باز را دوباره می‌فرستد، حجم آن کندل به ازای هر تیک یک‌بار
+     * دیگر جمع می‌شد (۲۰ تیک → حجم ~۲ برابر). آن حجم بادکرده بعداً در `agg?.cl` کپی می‌شد
+     * و `prevT1Vol` را خراب می‌کرد → شرط «کندل ولوم کم» بیش از حد راحت پاس می‌شد و
+     * نتیجهٔ لایو با بک‌تست یکی نبود.
+     *
+     * حالا تجمیع فقط در [processClosed] و فقط با کندل بسته انجام می‌شود (بدون ریپینت).
+     */
     private fun updateLive(cd: Candle, i: Int, prev: Candle?) {
         curBi = i; curT = cd.t; curVol = cd.v; liveCandle = cd
         times[i] = cd.t
         livePreview.clear()
         prevChartVol = prev?.v ?: Double.NaN
-        aggStep(aggS, i, cd, Tf.isNewBarStart(tfS(), cd.t, prev?.t))
-        aggStep(aggM, i, cd, Tf.isNewBarStart(tfM(), cd.t, prev?.t))
-        aggStep(agg1, i, cd, Tf.isNewBarStart(tf1(), cd.t, prev?.t))
         // وضعیت‌های در انتظار (فقط خواندنی)
         for (s in setups) {
             if (s.stage >= 1 && s.stage <= 6 && !s.zGone) {
@@ -252,13 +260,12 @@ class Engine(val cfg: Settings) {
                 }
             }
         }
-        // سقف تعداد باکس
-        while (zones.size > cfg.maxZoneBoxes) {
-            val first = zones.firstOrNull { it.status == ZoneStatus.ACTIVE || it.status == ZoneStatus.REJECTED }
-                ?: zones.firstOrNull() ?: break
-            first.status = ZoneStatus.CAP
-            break
-        }
+        // سقف تعداد باکس‌های نمایان:
+        // ⚠ پیش‌تر این‌جا `zones.size > maxZoneBoxes` سنجیده می‌شد؛ ولی `zones` هرگز کوچک نمی‌شود
+        // (باکس‌ها فقط وضعیت می‌گیرند)، پس بعد از ساخت ۲۴ باکس، در **هر** کندل یک باکس زنده
+        // بی‌دلیل CAP می‌شد و عملاً هیچ باکس ناحیه‌ای روی چارت نمی‌ماند.
+        // شمارش درست = فقط باکس‌های نمایان (فعال/ردشده) — همان معیاری که trimZones دارد.
+        trimZones()
         if (agg1.closedNow && agg1.cl != null) prevT1Vol = agg1.cl!!.v
         prevChartVol = cd.v
         cnt.zoneCount = zones.size
@@ -457,7 +464,9 @@ class Engine(val cfg: Settings) {
     }
 
     private fun trimZones() {
-        // قدیمی‌ترین باکس (فعال/ردشده) تا وقتی که تعداد از سقف بگذرد حذف می‌شود
+        // مسیر سریع: اگر کل باکس‌ها هم از سقف کمترند، قطعاً باکس نمایان بیشتری وجود ندارد
+        if (zones.size <= cfg.maxZoneBoxes) return
+        // قدیمی‌ترین باکس نمایان (فعال/ردشده) تا وقتی که تعداد نمایان‌ها از سقف بگذرد حذف می‌شود
         while (zones.count { it.status == ZoneStatus.ACTIVE || it.status == ZoneStatus.REJECTED } > cfg.maxZoneBoxes) {
             val victim = zones.firstOrNull { it.status == ZoneStatus.ACTIVE || it.status == ZoneStatus.REJECTED } ?: break
             victim.status = ZoneStatus.CAP

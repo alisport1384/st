@@ -68,7 +68,9 @@ object Log {
         private set
     /** دسته‌های خاموش (خالی = همه روشن) */
     private val muted = HashSet<String>()
-    @Volatile private var mirrorToLogcat = true
+    /** آینه کردن لاگ در Logcat — از تنظیمات خوانده می‌شود تا سوییچ رابط وضعیت درست را نشان دهد */
+    @Volatile var logcat: Boolean = true
+        private set
 
     private var appCtx: Context? = null
     private var session: Session? = null
@@ -77,7 +79,7 @@ object Log {
     private const val MAX_FILE_BYTES = 1_500_000L
 
     val sessionStart: Long = System.currentTimeMillis()
-    var appVersion: String = "1.3"
+    var appVersion: String = "1.3.1"
 
     class Entry(val t: Long, val level: Int, val cat: String, val msg: String, val data: String?)
 
@@ -99,7 +101,7 @@ object Log {
     }
 
     // ── راه‌اندازی ────────────────────────────────────────────────────────────
-    fun init(ctx: Context, version: String = "1.3") {
+    fun init(ctx: Context, version: String = "1.3.1") {
         appCtx = ctx.applicationContext
         appVersion = version
         // اگر پوشهٔ لاگ عوض شده باشد (مثلاً پاک شدن حافظه یا اجرای مجدد)،
@@ -110,7 +112,7 @@ object Log {
         enabled = p.getBoolean("log_enabled", false)
         minLevel = p.getInt("log_level", INFO)
         writeToFile = p.getBoolean("log_to_file", true)
-        mirrorToLogcat = p.getBoolean("log_logcat", true)
+        logcat = p.getBoolean("log_logcat", true)
         muted.clear()
         p.getStringSet("log_muted", emptySet())?.forEach { muted.add(it) }
     }
@@ -122,7 +124,7 @@ object Log {
             .putBoolean("log_enabled", enabled)
             .putInt("log_level", minLevel)
             .putBoolean("log_to_file", writeToFile)
-            .putBoolean("log_logcat", mirrorToLogcat)
+            .putBoolean("log_logcat", logcat)
             .putStringSet("log_muted", HashSet(muted))
             .apply()
     }
@@ -142,7 +144,7 @@ object Log {
 
     fun setWriteToFile(ctx: Context, v: Boolean) { writeToFile = v; persist(ctx); i(CAT_APP, "نوشتن در فایل: $v") }
 
-    fun setLogcat(ctx: Context, v: Boolean) { mirrorToLogcat = v; persist(ctx) }
+    fun setLogcat(ctx: Context, v: Boolean) { logcat = v; persist(ctx); i(CAT_APP, "آینه در Logcat: $v") }
 
     fun isMuted(cat: String) = muted.contains(cat)
 
@@ -174,7 +176,7 @@ object Log {
         )
         buffer.addLast(e)
         while (buffer.size > MAX_BUFFER) buffer.removeFirst()
-        if (mirrorToLogcat) {
+        if (logcat) {
             try {
                 when (level) {
                     WARN -> android.util.Log.w("GoldPin/$cat", msg)

@@ -91,9 +91,22 @@ class PaperBroker(private val cfg: Settings) {
             "ستاپ #${s.id} · ورود ${fmt(entryPx)} · حدضرر ${fmt(s.sl)} · حدسود ${fmt(s.tpx)} · حجم ${fmt(qty)}")
     }
 
-    fun cancel(order: Order, reason: String, t: Long, bi: Int) {
-        lg("ORDER", "سفارش لغو شد · #${order.id}", "reason=$reason status=${order.status}")
-        order.status = OrderStatus.CANCELLED_INVALID
+    /**
+     * لغو سفارش.
+     * @param status دلیل لغو را دقیق نگه می‌دارد: انقضا [OrderStatus.CANCELLED_EXPIRED] ،
+     *        لغو دستی [OrderStatus.CANCELLED_MANUAL] ، بقیه [OrderStatus.CANCELLED_INVALID].
+     *        (پیش‌تر همهٔ لغوها CANCELLED_INVALID می‌شدند و تب سفارش‌ها سفارش منقضی را
+     *        «لغو» نشان می‌داد، چون هیچ‌وقت CANCELLED_EXPIRED ست نمی‌شد.)
+     */
+    fun cancel(
+        order: Order,
+        reason: String,
+        t: Long,
+        bi: Int,
+        status: Int = OrderStatus.CANCELLED_INVALID
+    ) {
+        lg("ORDER", "سفارش لغو شد · #${order.id}", "reason=$reason status=$status")
+        order.status = status
         order.cancelReason = reason
         order.closedT = t
         if (pending?.id == order.id) pending = null
@@ -118,7 +131,7 @@ class PaperBroker(private val cfg: Settings) {
     fun restoreOpen(t: Trade?) { open = t }
 
     fun cancelPendingManually(t: Long, bi: Int) {
-        pending?.let { cancel(it, "لغو دستی توسط کاربر", t, bi) }
+        pending?.let { cancel(it, "لغو دستی توسط کاربر", t, bi, OrderStatus.CANCELLED_MANUAL) }
     }
 
     /** پردازش کندل: پر شدن سفارش + مدیریت پوزیشن. */
@@ -131,7 +144,8 @@ class PaperBroker(private val cfg: Settings) {
             if (touched) {
                 fillEntry(p, cd)
             } else if (barsWaiting > cfg.maxBarsToFill) {
-                cancel(p, "مهلت پر شدن تمام شد ($barsWaiting کندل)", cd.t, cd.bi)
+                cancel(p, "مهلت پر شدن تمام شد ($barsWaiting کندل)", cd.t, cd.bi,
+                    OrderStatus.CANCELLED_EXPIRED)
                 alarm(AlertKind.CANCEL, "سفارش ورود منقضی شد",
                     "پس از $barsWaiting کندل پر نشد · قیمت ${fmt(p.price)}")
             }

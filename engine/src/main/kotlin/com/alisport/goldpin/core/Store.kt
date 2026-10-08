@@ -54,6 +54,7 @@ object Store {
         "clearUsedZones" to c.clearUsedZones, "maxZoneBoxes" to c.maxZoneBoxes, "showPocVA" to c.showPocVA,
         "maxSetups" to c.maxSetups, "midInvalidClose" to c.midInvalidClose,
         "hvScanFirstTouch" to c.hvScanFirstTouch, "hvMarkFirstIncrease" to c.hvMarkFirstIncrease,
+        "rejectCandleNext" to c.rejectCandleNext,
         "mintick" to c.mintick, "slBufTicks" to c.slBufTicks, "minTPunits" to c.minTPunits,
         "useRiskPct" to c.useRiskPct, "riskPct" to c.riskPct, "equityPct" to c.equityPct,
         "maxLeverage" to c.maxLeverage, "roundQty" to c.roundQty, "maxBarsToFill" to c.maxBarsToFill,
@@ -72,6 +73,8 @@ object Store {
         c.showPocVA = m["showPocVA"].asB()
         c.maxSetups = m["maxSetups"].asI(); c.midInvalidClose = m["midInvalidClose"].asB()
         c.hvScanFirstTouch = m["hvScanFirstTouch"].asB(); c.hvMarkFirstIncrease = m["hvMarkFirstIncrease"].asB()
+        // rejectCandleNext در فایل‌های نسخهٔ ۱٫۳ و قبل‌تر وجود ندارد → asB(null)=false = مقدار پیش‌فرض
+        c.rejectCandleNext = m["rejectCandleNext"].asB()
         c.mintick = m["mintick"].asD(); c.slBufTicks = m["slBufTicks"].asD(); c.minTPunits = m["minTPunits"].asD()
         c.useRiskPct = m["useRiskPct"].asB(); c.riskPct = m["riskPct"].asD(); c.equityPct = m["equityPct"].asD()
         c.maxLeverage = m["maxLeverage"].asD(); c.roundQty = m["roundQty"].asB()

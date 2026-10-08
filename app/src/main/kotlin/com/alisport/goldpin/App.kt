@@ -62,7 +62,13 @@ class AppState {
     val main = Handler(Looper.getMainLooper())
     val listeners = ArrayList<() -> Unit>()
 
-    // موتور در نخ IO بازسازی می‌شود و رابط در نخ اصلی می‌خواند؛ همهٔ نماها snapshot می‌گیرند.
+    // موتور در نخ IO بازسازی می‌شود و رابط در نخ اصلی می‌خواند.
+    //
+    // ⚠ خواندن وضعیت **هرگز** نباید قفل بگیرد. `stateLock` گاهی صدها میلی‌ثانیه نگه داشته
+    // می‌شود (ساخت JSON ذخیرهٔ خودکار روی ۴۰٬۰۰۰ کندل ≈ ۲۵۰ms روی JVM دسکتاپ، روی گوشی بیشتر)
+    // و اگر `uiSnapshot()` هم پشت همان قفل منتظر بماند، رابط در هر ذخیرهٔ دوره‌ای فریز می‌شود.
+    // پس: قفل فقط برای *نوشتن* است؛ بعد از هر تغییر، یک snapshot تغییرناپذیر ساخته و به‌صورت
+    // اتمیک (@Volatile) منتشر می‌شود و رابط همان را بدون هیچ انتظار می‌خواند.
     private val stateLock = Any()
     data class UiSnapshot(
         val candles: List<Candle>,
@@ -81,8 +87,16 @@ class AppState {
         val lastResult: String
     )
 
-    fun uiSnapshot(): UiSnapshot = synchronized(stateLock) {
-        UiSnapshot(
+    @Volatile
+    private var snap: UiSnapshot = UiSnapshot(
+        emptyList(), emptyList(), emptyList(), emptyList(), emptyList(),
+        emptyList(), emptyList(), null, null,
+        Double.NaN, Double.NaN, Double.NaN, Double.NaN, "-"
+    )
+
+    /** ساخت و انتشار اتمیک snapshot — باید بلافاصله بعد از هر تغییر وضعیت صدا زده شود. */
+    private fun publishSnapshot() {
+        snap = UiSnapshot(
             candles.toList(), engine.zones.toList(), engine.markers.toList(), engine.setups.toList(),
             engine.events.toList(), broker.orders.toList(), broker.trades.toList(),
             broker.openTrade, broker.pendingOrder, engine.lastPocPx, engine.lastEntryPx,
@@ -90,8 +104,10 @@ class AppState {
         )
     }
 
-    fun tradesSnapshot(): List<Trade> = synchronized(stateLock) { broker.trades.toList() }
-    fun ordersSnapshot(): List<Order> = synchronized(stateLock) { broker.orders.toList() }
+    /** بدون قفل — رابط هرگز برای خواندن وضعیت منتظر موتور نمی‌ماند. */
+    fun uiSnapshot(): UiSnapshot = snap
+    fun tradesSnapshot(): List<Trade> = snap.trades
+    fun ordersSnapshot(): List<Order> = snap.orders
 
     init {
         engine.broker = broker
@@ -103,7 +119,7 @@ class AppState {
     /** راه‌اندازی لاگر و هشدارها + وصل کردن آن‌ها به موتور و کارگزار */
     fun initApp(ctx: Context) {
         appCtx = ctx.applicationContext
-        Log.init(appCtx!!, "1.3")
+        Log.init(appCtx!!, "1.3.1")
         Alerts.init(appCtx!!)
         val p = appCtx!!.getSharedPreferences("goldpin", Context.MODE_PRIVATE)
         // مهاجرت ۱٫۱ → ۱٫۲: تمام‌صفحهٔ خودکار دیگر پیش‌فرض نیست؛ تنظیم قدیمی true را یک‌بار خاموش کن.
@@ -184,13 +200,19 @@ class AppState {
         engine.barCommitHook = { cd -> broker.onBar(cd, live = false) }
         val prev = Alerts.inBacktest
         Alerts.inBacktest = true
-        if (candles.isNotEmpty()) engine.feed(candles, lastIsClosed = backtestFull)
-        Alerts.inBacktest = prev
+        try {
+            if (candles.isNotEmpty()) engine.feed(candles, lastIsClosed = backtestFull)
+        } finally {
+            // ⚠ بدون finally، هر استثنا داخل feed این پرچم را برای همیشه true می‌گذاشت
+            // و از آن لحظه به بعد هیچ بنر/نوتیفیکیشن/صدایی پخش نمی‌شد.
+            Alerts.inBacktest = prev
+        }
         engine.broker = broker
         Log.i(Log.CAT_ENGINE, "اجرای موتور تمام شد",
             "مدت=${System.currentTimeMillis() - t0}ms پردازش‌شده=${engine.processed} ستاپ=${engine.cnt.setup} برخورد=${engine.cnt.touch} " +
                 "میانی=${engine.cnt.mid} ولوم‌کم=${engine.cnt.lv} ولوم‌زیاد=${engine.cnt.hv} ورود=${engine.cnt.entry} پایان=${engine.cnt.done} " +
                 "باکس=${engine.zones.size} سفارش=${broker.orders.size} معامله=${broker.trades.size} موجودی=${Fa.n(broker.balance, 2)}")
+        publishSnapshot()
         notifyUi()
         }
     }
@@ -298,16 +320,23 @@ class AppState {
                 val last = tail.lastOrNull()?.c ?: Double.NaN
                 Log.d(Log.CAT_LIVE, "به‌روزرسانی زنده",
                     "دنباله=${tail.size} قیمت=${if (spot != null) Fa.n(spot, 2) else "-"} منبع=$spotSrc مدت=${System.currentTimeMillis() - t0}ms")
-                main.post {
+                // ⚠ ادغام داده و اجرای موتور روی **نخ پس‌زمینه** انجام می‌شود.
+                // پیش‌تر این کار داخل main.post بود: هم نخ رابط را قفل می‌کرد (فریز/ANR) و هم
+                // با rebuild() که روی نخ IO است هم‌زمان روی engine.setups می‌چرخید
+                // (ConcurrentModificationException). حالا هر دو زیر یک قفل‌اند.
+                synchronized(stateLock) {
                     mergeTail(tail)
-                    lastLivePrice = if (spot != null && !spot.isNaN()) spot else last
-                    lastPriceSource = spotSrc
-                    lastFeedAt = System.currentTimeMillis()
-                    lastFeedError = null
                     engine.broker = broker
                     engine.barCommitHook = { cd -> broker.onBar(cd, live = false) }
                     engine.feed(candles, lastIsClosed = false)
                     candles.lastOrNull()?.let { broker.onBar(it, live = true) }
+                    publishSnapshot()
+                }
+                main.post {
+                    lastLivePrice = if (spot != null && !spot.isNaN()) spot else last
+                    lastPriceSource = spotSrc
+                    lastFeedAt = System.currentTimeMillis()
+                    lastFeedError = null
                     notifyUi()
                     if (notifyDone) onDone("به‌روزرسانی شد · ${com.alisport.goldpin.util.Fa.n(lastLivePrice, 2)}")
                 }
@@ -368,9 +397,11 @@ class AppState {
             "baseTfSec" to baseTfSec,
             "chartTfSec" to chartTfSec,
             "depth" to depth,
-            "appVersion" to 1
+            "appVersion" to 2
         )
-        return Store.save(cfg, engine, broker, candles, meta)
+        // ⚠ موتور/کارگزار در نخ IO تغییر می‌کنند؛ بدون قفل، Store.save روی فهرست‌های در حال
+        // تغییر می‌افتاد و ConcurrentModificationException می‌داد (ذخیرهٔ خودکار حین لایو).
+        return synchronized(stateLock) { Store.save(cfg, engine, broker, candles, meta) }
     }
 
     fun saveToAutoFile(ctx: Context): String {
@@ -417,17 +448,21 @@ class AppState {
         val t0 = System.currentTimeMillis()
         Log.i(Log.CAT_STORE, "شروع بازیابی وضعیت", "بایت=${json.length}")
         return try {
+            // تجزیهٔ JSON (سنگین) بیرون از قفل؛ کپی وضعیت داخل قفل
             val ld = Store.load(json)
-            copySettings(ld.cfg, cfg)
-            engine.reset()
-            broker.reset()
-            // انتقال وضعیت بازیابی‌شده به نمونه‌های سراسری
-            copyEngine(ld.eng, engine)
-            copyBroker(ld.broker, broker)
-            engine.broker = broker
-            broker.engine = engine
-            engine.barCommitHook = { cd -> broker.onBar(cd, live = false) }
-            candles = ArrayList(ld.candles)
+            synchronized(stateLock) {
+                copySettings(ld.cfg, cfg)
+                engine.reset()
+                broker.reset()
+                // انتقال وضعیت بازیابی‌شده به نمونه‌های سراسری
+                copyEngine(ld.eng, engine)
+                copyBroker(ld.broker, broker)
+                engine.broker = broker
+                broker.engine = engine
+                engine.barCommitHook = { cd -> broker.onBar(cd, live = false) }
+                candles = ArrayList(ld.candles)
+                publishSnapshot()
+            }
             val m = ld.meta
             symbol = m["symbol"]?.toString() ?: symbol
             baseTfSec = (m["baseTfSec"] as? Long)?.toInt() ?: baseTfSec
@@ -456,6 +491,7 @@ class AppState {
         to.clearUsedZones = c.clearUsedZones; to.maxZoneBoxes = c.maxZoneBoxes; to.showPocVA = c.showPocVA
         to.maxSetups = c.maxSetups; to.midInvalidClose = c.midInvalidClose
         to.hvScanFirstTouch = c.hvScanFirstTouch; to.hvMarkFirstIncrease = c.hvMarkFirstIncrease
+        to.rejectCandleNext = c.rejectCandleNext
         to.mintick = c.mintick; to.slBufTicks = c.slBufTicks; to.minTPunits = c.minTPunits
         to.useRiskPct = c.useRiskPct; to.riskPct = c.riskPct; to.equityPct = c.equityPct
         to.maxLeverage = c.maxLeverage; to.roundQty = c.roundQty; to.maxBarsToFill = c.maxBarsToFill
@@ -516,31 +552,74 @@ class AppState {
     /** پاک کردن کامل */
     fun wipe() {
         Log.w(Log.CAT_APP, "پاک کردن همهٔ داده‌ها و وضعیت")
-        candles = emptyList()
-        broker.reset()
-        engine.reset()
-        engine.broker = broker; broker.engine = engine
-        engine.barCommitHook = { cd -> broker.onBar(cd, live = false) }
+        synchronized(stateLock) {
+            candles = emptyList()
+            broker.reset()
+            engine.reset()
+            engine.broker = broker; broker.engine = engine
+            engine.barCommitHook = { cd -> broker.onBar(cd, live = false) }
+            publishSnapshot()
+        }
         notifyUi()
+    }
+
+    /** هستهٔ همگام بارگذاری نمونهٔ داخلی — باید روی نخ پس‌زمینه صدا زده شود. */
+    private fun loadSampleBlocking(ctx: Context): Int {
+        val n = Feed.openSampleAsset(ctx).use { ins ->
+            val text = Feed.readCsvStream(ins)
+            var list = Feed.parseCsv(text)
+            list = Feed.aggregate(list, chartTfSec)
+            Log.i(Log.CAT_FEED, "دادهٔ نمونهٔ داخلی بارگذاری شد", "کندل=${list.size}")
+            setCandles(list)
+            list.size
+        }
+        return n
     }
 
     /** بارگذاری دادهٔ نمونهٔ داخلی (آفلاین) */
     fun loadSample(ctx: Context, onDone: (String) -> Unit) {
         io.execute {
             try {
-                Feed.openSampleAsset(ctx).use { ins ->
-                    val text = Feed.readCsvStream(ins)
-                    var list = Feed.parseCsv(text)
-                    list = Feed.aggregate(list, chartTfSec)
-                    Log.i(Log.CAT_FEED, "دادهٔ نمونهٔ داخلی بارگذاری شد", "کندل=${list.size}")
-                    setCandles(list)
-                    main.post {
-                        onDone("نمونهٔ داخلی بارگذاری شد: ${com.alisport.goldpin.util.Fa.d(list.size.toString())} کندل")
-                    }
+                val n = loadSampleBlocking(ctx)
+                main.post {
+                    onDone("نمونهٔ داخلی بارگذاری شد: ${com.alisport.goldpin.util.Fa.d(n.toString())} کندل")
                 }
             } catch (e: Exception) {
                 Log.e(Log.CAT_FEED, "خطا در دادهٔ نمونه", e)
                 main.post { onDone("خطا در نمونهٔ داخلی: ${e.message}") }
+            }
+        }
+    }
+
+    /**
+     * بازیابی وضعیت هنگام بالا آمدن اپ — **روی نخ پس‌زمینه**.
+     * پیش‌تر در onCreate به‌صورت همگام اجرا می‌شد: خواندن و تجزیهٔ یک فایل چند مگابایتی
+     * روی نخ رابط = صفحهٔ شروع فریز و خطر ANR.
+     * اگر فایل ذخیره‌ای نباشد، دادهٔ نمونه بارگذاری می‌شود.
+     */
+    fun restoreOrSample(ctx: Context, onDone: (String) -> Unit) {
+        busy = true
+        busyText = "در حال بازیابی وضعیت…"
+        notifyUi()
+        io.execute {
+            val msg = try {
+                val f = Storage.autoFile(ctx)
+                if (f.exists()) {
+                    loadFromText(Storage.readText(f))
+                } else {
+                    Log.w(Log.CAT_APP, "فایل ذخیره پیدا نشد → بارگذاری دادهٔ نمونه")
+                    loadSampleBlocking(ctx)
+                    "فایل ذخیره‌ای نبود — دادهٔ نمونه بارگذاری شد"
+                }
+            } catch (e: Exception) {
+                // هرگز اپ را با فایل خراب از کار نینداز؛ فقط اطلاع بده
+                Log.e(Log.CAT_STORE, "بازیابی خودکار ناموفق بود", e)
+                "بازیابی نشد: ${e.message}"
+            }
+            main.post {
+                busy = false
+                busyText = ""
+                onDone(msg)
             }
         }
     }
