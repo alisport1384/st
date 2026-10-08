@@ -39,9 +39,9 @@ onDestroy: Log.i پایان نشست ، flush
 BACK     : اگر تمام‌صفحه → خروج از تمام‌صفحه؛ وگرنه خروج از تب
 ```
 `AppState.init(ctx)` کارهای زیر را انجام می‌دهد:
-1. `Log.init(ctx, "1.1")` (خواندن تنظیمات لاگر از SharedPreferences با کلید `log_enabled`، پیش‌فرض **خاموش**)
+1. `Log.init(ctx, "1.2")` (خواندن تنظیمات لاگر از SharedPreferences با کلید `log_enabled`، پیش‌فرض **خاموش**)
 2. `Alerts.init(ctx)` (کانال نوتیفیکیشن `goldpin_alerts_v1`)
-3. خواندن `auto_fullscreen` (پیش‌فرض **روشن**)
+3. خواندن `auto_fullscreen` (پیش‌فرض **خاموش**؛ مهاجرت نسخهٔ ۱٫۱ هم یک‌بار آن را خاموش می‌کند)
 4. `wireLogging()` → وصل کردن `engine.logSink`، `broker.logSink`، `engine.alertSink`، `broker.alertSink`
 
 ## ۴) جریان داده (بک‌تست و لایو)

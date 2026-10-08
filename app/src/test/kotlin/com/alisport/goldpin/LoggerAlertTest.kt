@@ -31,7 +31,7 @@ class LoggerAlertTest {
     // ── ۱) لاگر پیش‌فرض خاموش است ────────────────────────────────────────────
     @Test
     fun `logger is off by default and writes nothing`() {
-        Log.init(ctx, "1.1")
+        Log.init(ctx, "1.2"); Log.clearBuffer()
         Log.setEnabled(ctx, false)
         val before = Log.count()
         Log.i(Log.CAT_APP, "این خط نباید ثبت شود")
@@ -42,7 +42,7 @@ class LoggerAlertTest {
     // ── ۲) روشن کردن لاگر + خروجی .md و .txt ────────────────────────────────
     @Test
     fun `logger writes both md and txt files when enabled`() {
-        Log.init(ctx, "1.1")
+        Log.init(ctx, "1.2"); Log.clearBuffer()
         Log.setLevel(ctx, Log.DEBUG)
         Log.setWriteToFile(ctx, true)
         Log.setEnabled(ctx, true)
@@ -77,7 +77,7 @@ class LoggerAlertTest {
     // ── ۳) سطح و دسته‌بندی ─────────────────────────────────────────────────
     @Test
     fun `level filter and mute work`() {
-        Log.init(ctx, "1.1")
+        Log.init(ctx, "1.2"); Log.clearBuffer()
         Log.setEnabled(ctx, true)
         Log.setWriteToFile(ctx, false)
         Log.setLevel(ctx, Log.WARN)
@@ -98,7 +98,7 @@ class LoggerAlertTest {
     // ── ۴) موتور و کارگزار واقعاً لاگ می‌دهند ────────────────────────────────
     @Test
     fun `engine and broker feed the logger`() {
-        Log.init(ctx, "1.1")
+        Log.init(ctx, "1.2"); Log.clearBuffer()
         Log.setEnabled(ctx, true)
         Log.setWriteToFile(ctx, false)
         Log.setLevel(ctx, Log.DEBUG)
@@ -114,6 +114,7 @@ class LoggerAlertTest {
         val list = com.alisport.goldpin.data.Feed.parseCsv(text).take(12_000)
         s.cfg.tf2 = 60; s.chartTfSec = 60; s.backtestFull = true
         s.setCandles(list)
+        Log.clearBuffer()
         val before = Log.count()
         s.rebuild()
         val after = Log.count()
@@ -239,27 +240,35 @@ class LoggerAlertTest {
         assertTrue("بازگشت به مقیاس خودکار", cv.autoPrice)
     }
 
-    // ── ۸) حالت تمام‌صفحه در اکتیویتی ────────────────────────────────────────
+    // ── ۸) حالت تمام‌صفحه در اکتیویتی (اختیاری — با دکمه/تنظیمات) ──
     @Test
-    fun `fullscreen mode hides header and tabs`() {
+    fun `fullscreen hides header and tabs and back restores them`() {
         val c = org.robolectric.Robolectric.buildActivity(MainActivity::class.java).setup()
         val act = c.get()
         shadowOf(Looper.getMainLooper()).idle()
         val content = act.window.decorView.findViewById<android.view.ViewGroup>(android.R.id.content)
         val shell = content.getChildAt(0) as android.widget.LinearLayout
-        assertNotNull(shell)
         val header = shell.getChildAt(0)
         val tabs = shell.getChildAt(2)
-        // با پیش‌فرض روشن، اپ باید تمام‌صفحه باشد
-        val s = AppState.instance
-        s.autoFullscreen = true
-        assertEquals("هدر در تمام‌صفحه پنهان است", View.GONE, header.visibility)
-        assertEquals("نوار تب‌ها در تمام‌صفحه پنهان است", View.GONE, tabs.visibility)
-        // خروج از تمام‌صفحه با back
+        assertNotNull(shell)
+
+        // پیش‌فرض: تمام‌صفحه خاموش است (رابط تمیز با هدر و تب‌ها)
+        assertEquals("پیش‌فرض نباید تمام‌صفحه باشد", View.VISIBLE, header.visibility)
+        assertEquals("پیش‌فرض نباید تمام‌صفحه باشد", View.VISIBLE, tabs.visibility)
+
+        // ورود دستی به تمام‌صفحه (همان کاری که دکمهٔ «⛶ تمام‌صفحه» می‌کند)
+        val m = act.javaClass.getDeclaredMethod("setFullscreen", Boolean::class.javaPrimitiveType, Boolean::class.javaPrimitiveType)
+        m.isAccessible = true
+        m.invoke(act, true, true)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("در تمام‌صفحه هدر پنهان است", View.GONE, header.visibility)
+        assertEquals("در تمام‌صفحه نوار تب‌ها پنهان است", View.GONE, tabs.visibility)
+
+        // BACK اول از تمام‌صفحه بیرون می‌آید
         act.onKeyDown(android.view.KeyEvent.KEYCODE_BACK, android.view.KeyEvent(0, android.view.KeyEvent.KEYCODE_BACK))
         shadowOf(Looper.getMainLooper()).idle()
-        assertEquals("پس از خروج، هدر برمی‌گردد", View.VISIBLE, header.visibility)
-        assertEquals("پس از خروج، تب‌ها برمی‌گردند", View.VISIBLE, tabs.visibility)
+        assertEquals("پس از BACK، هدر برمی‌گردد", View.VISIBLE, header.visibility)
+        assertEquals("پس از BACK، تب‌ها برمی‌گردند", View.VISIBLE, tabs.visibility)
         c.pause().stop().destroy()
     }
 }

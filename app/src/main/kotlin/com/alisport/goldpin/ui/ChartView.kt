@@ -261,7 +261,8 @@ class ChartView @JvmOverloads constructor(
 
         // قیمت: بازهٔ عمودی (همان ضریب)
         autoPrice = false
-        val span2 = (priceSpan / factor).coerceIn(0.05, 1e9)
+        val cur = if (priceSpan.isFinite() && priceSpan > 0) priceSpan else priceSpanFloor()
+        val span2 = (cur / factor).coerceIn(priceSpanFloor(), 1e9)
         priceSpan = span2
         priceCenter = priceAtFocus - (0.5 - fy / (chartH - timeH).coerceAtLeast(1f)) * span2
 
@@ -357,9 +358,11 @@ class ChartView @JvmOverloads constructor(
 
     private fun visibleRange(): Pair<Int, Int> {
         if (candles.isEmpty()) return 0 to -1
-        val from = floor(rightIdx - plotW / barW - 1f).toInt().coerceAtLeast(0)
-        val to = ceil(rightIdx + 1f).toInt().coerceAtMost(candles.size - 1)
-        return from to to
+        val w = if (barW.isFinite() && barW > 0.01f) barW else minBarW
+        val r = if (rightIdx.isFinite()) rightIdx else 0f
+        val from = floor(r - plotW / w - 1f).toInt().coerceIn(0, candles.size - 1)
+        val to = ceil(r + 1f).toInt().coerceIn(0, candles.size - 1)
+        return from to max(from, to)
     }
 
     private fun loHiVisible(): Pair<Double, Double> {
@@ -392,23 +395,60 @@ class ChartView @JvmOverloads constructor(
     private fun applyAutoPrice() {
         if (!autoPrice || chartH == 0) return
         val (lo, hi) = loHiVisible()
-        if (hi <= lo) return
+        if (!lo.isFinite() || !hi.isFinite()) return
+        if (hi <= lo) {
+            // دادهٔ تخت (همهٔ قیمت‌ها برابر) یا بازهٔ خالی → دامنهٔ پیش‌فرض سالم
+            val ref = if (hi.isFinite() && hi != 0.0) kotlin.math.abs(hi) else 1.0
+            priceCenter = if (hi.isFinite()) hi else 0.0
+            priceSpan = max(0.05, ref * 0.004)
+            return
+        }
         val pad = (hi - lo) * 0.08
         val center = (hi + lo) / 2.0
         priceCenter = center
-        priceSpan = (hi - lo) + 2 * pad
+        priceSpan = ((hi - lo) + 2 * pad).takeIf { it.isFinite() && it > 0 } ?: max(0.05, hi * 0.004)
     }
 
     /** گام گرد برای اعداد محور قیمت */
     private fun niceStep(raw: Double): Double {
-        if (raw <= 0) return 1.0
+        if (!raw.isFinite() || raw <= 0.0) return 1.0
         val exp = floor(log10(raw))
         val base = 10.0.pow(exp)
         val f = raw / base
         val mult = when {
             f <= 1 -> 1.0; f <= 2 -> 2.0; f <= 2.5 -> 2.5; f <= 5 -> 5.0; else -> 10.0
         }
-        return mult * base
+        val out = mult * base
+        return if (out.isFinite() && out > 0.0) out else 1.0
+    }
+
+    /**
+     * کمترین دامنهٔ مجاز قیمت — نسبت به قیمت مرجع.
+     * بدون این کف، دامنهٔ صفر یا فوق‌کوچک باعث حلقهٔ بی‌پایان در رسم شبکه می‌شود.
+     */
+    private fun priceSpanFloor(): Double {
+        val ref = when {
+            priceCenter.isFinite() && priceCenter != 0.0 -> kotlin.math.abs(priceCenter)
+            candles.isNotEmpty() -> kotlin.math.abs(candles.last().c)
+            else -> 1.0
+        }
+        return max(0.05, ref * 1e-7)
+    }
+
+    /**
+     * پاک‌سازی مقادیر نما — کلید جلوگیری از فریز:
+     * دامنهٔ قیمت، عرض کندل و موقعیت باید متناهی و در محدودهٔ سالم باشند.
+     */
+    private fun sanitizeView() {
+        if (!barW.isFinite() || barW < minBarW * 0.5f) barW = minBarW
+        if (barW > maxBarW * 2f) barW = maxBarW
+        val maxIdx = (candles.size - 1).coerceAtLeast(0).toFloat()
+        if (!rightIdx.isFinite()) rightIdx = maxIdx
+        rightIdx = rightIdx.coerceIn(0f, maxIdx)
+        if (!priceCenter.isFinite()) priceCenter = if (candles.isEmpty()) 0.0 else candles.last().c
+        val floorSpan = priceSpanFloor()
+        if (!priceSpan.isFinite() || priceSpan < floorSpan) priceSpan = floorSpan
+        if (priceSpan > 1e12) priceSpan = 1e12
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -626,6 +666,7 @@ class ChartView @JvmOverloads constructor(
         super.onDraw(canvas)
         canvas.drawColor(bg)
         if (chartW == 0 || chartH == 0) return
+        if (candles.isNotEmpty()) sanitizeView()
         if (candles.isEmpty()) {
             pTxt.textSize = Ui.dp(context, 12.5f).toFloat()
             pTxt.color = axisText
@@ -649,17 +690,20 @@ class ChartView @JvmOverloads constructor(
         val (from, to) = visibleRange()
 
         // ── شبکه و محور قیمت ──
-        if (showGrid) {
+        if (showGrid && priceSpan.isFinite() && priceSpan > 0) {
             val step = niceStep(priceSpan / 6.0)
             var p = floor((priceCenter - priceSpan / 2) / step) * step
-            while (p <= priceCenter + priceSpan / 2) {
+            var guard = 0
+            while (p <= priceCenter + priceSpan / 2 && guard++ < 80) {
                 val y = yOf(p)
                 if (y in 0f..priceH) {
                     canvas.drawLine(0f, y, plotW, y, pGrid)
                     val lbl = fmtPrice(p)
                     canvas.drawText(lbl, plotW + Ui.dp(context, 5f), y + Ui.dp(context, 3.4f), pTxt)
                 }
-                p += step
+                val np = p + step
+                if (np == p || !np.isFinite()) break     // دقت اعشاری اجازهٔ پیشرفت نمی‌دهد → توقف
+                p = np
             }
         }
         // محور قیمت (پس‌زمینه)
@@ -720,9 +764,10 @@ class ChartView @JvmOverloads constructor(
 
         // ── محور زمان ──
         canvas.drawRect(0f, h, chartW.toFloat(), chartH.toFloat(), pAxis)
-        val stride = timeStride()
+        val stride = timeStride().coerceAtLeast(1)
         var i = from - (from % stride)
-        while (i <= to) {
+        var tGuard = 0
+        while (i <= to && tGuard++ < 400) {              // کران سخت: حداکثر ۴۰۰ برچسب
             if (i >= 0) {
                 val x = xOf(i.toFloat())
                 if (x in 0f..plotW) {

@@ -27,15 +27,37 @@ object Storage {
 
     fun autoFile(ctx: Context): File = File(dir(ctx), FILE_NAME)
 
+    /**
+     * نوشتن اتمیک وضعیت: ابتدا در فایل موقت، سپس جای‌گزینی با فایل اصلی.
+     * اگر اپ وسط ذخیره کشته شود، فایل سالم قبلی خراب نمی‌شود.
+     */
     fun writeText(file: File, json: String) {
-        GZIPOutputStream(file.outputStream().buffered()).use { it.write(json.toByteArray(Charsets.UTF_8)) }
+        val tmp = File(file.parentFile, file.name + ".tmp")
+        GZIPOutputStream(tmp.outputStream().buffered()).use { it.write(json.toByteArray(Charsets.UTF_8)) }
+        if (file.exists()) file.delete()
+        if (!tmp.renameTo(file)) {
+            // اگر جای‌گزینی ممکن نشد، مستقیم می‌نویسیم
+            GZIPOutputStream(file.outputStream().buffered()).use { it.write(json.toByteArray(Charsets.UTF_8)) }
+            tmp.delete()
+        }
         Log.d(Log.CAT_STORE, "فایل وضعیت نوشته شد", "مسیر=${file.absolutePath} بایت=${file.length()}")
     }
 
     fun readText(file: File): String {
         if (!file.exists()) throw FeedException("فایل ذخیره وجود ندارد")
         val t0 = System.currentTimeMillis()
-        val txt = readStream(file.inputStream(), gz = true)
+        val txt = try {
+            readStream(file.inputStream(), gz = true)
+        } catch (e: Exception) {
+            // فایل نیمه‌نوشته یا خراب (مثلاً اپ وسط ذخیره بسته شده) → اگر فایل سالم قبلی هست از آن بخوان
+            Log.w(Log.CAT_STORE, "فایل ذخیرهٔ اصلی خوانده نشد؛ تلاش برای فایل پشتیبان", e.message ?: "")
+            val bak = File(file.parentFile, file.name + ".bak")
+            if (bak.exists()) {
+                readStream(bak.inputStream(), gz = true)
+            } else {
+                throw FeedException("فایل ذخیرهٔ وضعیت خراب یا ناتمام است (لطفاً دوباره ذخیره کنید)")
+            }
+        }
         Log.d(Log.CAT_STORE, "فایل وضعیت خوانده شد", "مسیر=${file.absolutePath} بایت=${file.length()} مدت=${System.currentTimeMillis() - t0}ms")
         return txt
     }

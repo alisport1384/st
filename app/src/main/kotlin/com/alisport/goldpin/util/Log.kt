@@ -77,7 +77,7 @@ object Log {
     private const val MAX_FILE_BYTES = 1_500_000L
 
     val sessionStart: Long = System.currentTimeMillis()
-    var appVersion: String = "1.1"
+    var appVersion: String = "1.2"
 
     class Entry(val t: Long, val level: Int, val cat: String, val msg: String, val data: String?)
 
@@ -99,7 +99,7 @@ object Log {
     }
 
     // ── راه‌اندازی ────────────────────────────────────────────────────────────
-    fun init(ctx: Context, version: String = "1.1") {
+    fun init(ctx: Context, version: String = "1.2") {
         appCtx = ctx.applicationContext
         appVersion = version
         // اگر پوشهٔ لاگ عوض شده باشد (مثلاً پاک شدن حافظه یا اجرای مجدد)،
@@ -167,7 +167,11 @@ object Log {
         if (!enabled) return
         if (level < minLevel) return
         if (muted.contains(cat)) return
-        val e = Entry(System.currentTimeMillis(), level, cat, msg, data)
+        val e = Entry(
+            System.currentTimeMillis(), level, cat,
+            if (msg.length > 400) msg.substring(0, 400) + "…" else msg,
+            data?.let { if (it.length > 600) it.substring(0, 600) + "…" else it }
+        )
         buffer.addLast(e)
         while (buffer.size > MAX_BUFFER) buffer.removeFirst()
         if (mirrorToLogcat) {
@@ -233,9 +237,11 @@ object Log {
         append("=====================================================\n")
     }
 
+    private val stampFmt = ThreadLocal.withInitial { SimpleDateFormat("HH:mm:ss.SSS", Locale.US) }
+
     private fun writeEntry(e: Entry) {
         val s = session ?: openSession().also { session = it }
-        val hhmmss = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date(e.t))
+        val hhmmss = stampFmt.get()!!.format(Date(e.t))
         val mdLine = "| $hhmmss | ${levelName(e.level)} | ${e.cat} | ${mdEsc(e.msg)} | ${mdEsc(e.data ?: "")} |\n"
         val txtLine = "$hhmmss ${levelName(e.level).padEnd(5)} [${e.cat}] ${e.msg}" + (e.data?.let { "  ·  $it" } ?: "") + "\n"
         try {
@@ -311,8 +317,9 @@ object Log {
 
     fun tail(n: Int = 300): List<String> {
         val last = buffer.toList().takeLast(n.coerceAtLeast(1))
+        val f = stampFmt.get()!!
         return last.map { e ->
-            val hhmmss = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(e.t))
+            val hhmmss = f.format(Date(e.t))
             "$hhmmss ${levelName(e.level)} [${e.cat}] ${e.msg}" + (e.data?.let { d -> " · $d" } ?: "")
         }
     }

@@ -9,7 +9,7 @@ gradle :engine:test :app:testReleaseUnitTest :app:assembleRelease   # همه + �
 ```
 گزارش‌ها: `engine/build/reports/tests/test/index.html` و `app/build/reports/tests/testReleaseUnitTest/index.html`
 
-## ۲) فهرست کامل تست‌ها (۲۱ تست)
+## ۲) فهرست کامل تست‌ها (۲۸ تست)
 ### موتور — `ZoneTest` (۵)
 | تست | چه چیزی را تضمین می‌کند |
 |---|---|
@@ -44,6 +44,17 @@ gradle :engine:test :app:testReleaseUnitTest :app:assembleRelease   # همه + �
 | `pinch gesture zooms both time and price` | پینچ دو انگشتی **هم زمان و هم قیمت** را زوم می‌کند، مقیاس خودکار خاموش می‌شود، جابه‌جایی و بازنشانی درست کار می‌کند |
 | `price axis drag disables auto and double tap restores` | کشیدن روی محور قیمت = مقیاس دستی، `resetPrice()` = خودکار |
 | `fullscreen mode hides header and tabs` | در تمام‌صفحهٔ `MainActivity` هدر و تب‌ها `GONE` می‌شوند و با BACK برمی‌گردند |
+
+### اپ — `FreezeAndLayoutTest` (۷) ← **جدید در ۱٫۲**
+| تست | تضمین |
+|---|---|
+| `flat data never freezes the chart draw` | دادهٔ تخت (دامنهٔ صفر) دیگر حلقهٔ رسم را بی‌پایان نمی‌کند |
+| `extreme pinch then draw stays fast` | ۱۲۰ پینچ شدید پیاپی + رسم، همه زیر حد مجاز زمان |
+| `degenerate view state is repaired before draw` | مقادیر NaN/صفر پیش از رسم ترمیم می‌شوند |
+| `toolbar and timeframe row sit above the chart without overlap` | نوارها خواهرِ چارت‌اند (نه شناور روی آن) و چارت وزن ۱ دارد |
+| `fullscreen is off by default` | تمام‌صفحه اختیاری است |
+| `reports tab and log menu open quickly` | تب گزارش و منوی لاگ با ۱۵٬۰۰۰ خط لاگ سریع باز می‌شوند |
+| `frequent ui notifications are coalesced` | ۲۰۰ اطلاع‌رسانی پیاپی ارزان است و شنونده‌ها انباشته نمی‌شوند |
 
 ## ۳) سیاست تست
 * هر باگ که یک بار رخ داد، یک تست می‌گیرد (مثال: باگ «نشست لاگ پس از پاک شدن حافظه» ⇒ ترمیم در `Log.add`).

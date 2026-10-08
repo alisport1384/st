@@ -67,6 +67,10 @@ class MainActivity : Activity() {
     private var reportKind = Reports.WEEKLY
     private var refreshing = false
     private var pendingReport: String? = null
+    private var lastRefreshAt = 0L
+    private var refreshQueued = false
+    private var tabSignature = ""
+    private val uiListener: () -> Unit = { refreshCurrent() }
 
     private val REQ_SAVE = 101
     private val REQ_LOAD = 102
@@ -84,7 +88,7 @@ class MainActivity : Activity() {
         AppState.init(applicationContext)
         Alerts.bannerSink = { text, color, kind -> showBanner(text, color, kind) }
         buildShell()
-        s.onChange { refreshCurrent() }
+        s.onChange(uiListener)
         val msg = s.loadFromAutoFile(applicationContext)
         if (!msg.startsWith("بازیابی")) {
             Log.w(Log.CAT_APP, "فایل ذخیره پیدا نشد → بارگذاری دادهٔ نمونه")
@@ -93,8 +97,9 @@ class MainActivity : Activity() {
             toast(msg)
         }
         showTab(0)
+        // تمام‌صفحه دیگر اجباری نیست؛ فقط اگر کاربر در تنظیمات ⓪ روشن کرده باشد
         if (s.autoFullscreen) {
-            Log.i(Log.CAT_UI, "ورود خودکار به تمام‌صفحه (تنظیمات)")
+            Log.i(Log.CAT_UI, "ورود خودکار به تمام‌صفحه (تنظیمات ⓪ روشن است)")
             setFullscreen(true, keepTab = true)
         }
     }
@@ -106,11 +111,12 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        s.offChange(uiListener)                     // جلوگیری از انباشت شنونده‌ها
         if (isFinishing) {
             Alerts.bannerSink = null
             Log.i(Log.CAT_APP, "خروج از اپ")
             Log.flush()
-            s.saveToAutoFile(applicationContext)
+            s.io.execute { s.saveToAutoFile(applicationContext) }   // ذخیره در پس‌زمینه
         }
         super.onDestroy()
     }
@@ -188,10 +194,24 @@ class MainActivity : Activity() {
             3 -> content.addView(buildReportsScreen())
             4 -> content.addView(buildSettingsScreen())
         }
-        refreshCurrent()
+        tabSignature = "$i|$reportKind|${s.broker.trades.size}|${s.broker.orders.size}|${s.broker.closedTrades().size}"
+        refreshCurrent(force = true)
     }
 
-    private fun refreshCurrent() {
+    /**
+     * تازه‌سازی رابط. ضد‌سیل (debounce) دارد تا سیل رخدادهای موتور،
+     * نخ رابط را قفل نکند؛ و هر تب فقط وقتی داده‌اش عوض شده بازسازی می‌شود.
+     */
+    private fun refreshCurrent(force: Boolean = false) {
+        val now = android.os.SystemClock.uptimeMillis()
+        if (!force && now - lastRefreshAt < 300) {
+            if (!refreshQueued) {
+                refreshQueued = true
+                content.postDelayed({ refreshQueued = false; refreshCurrent(true) }, 320)
+            }
+            return
+        }
+        lastRefreshAt = now
         if (refreshing) return
         refreshing = true
         try {
@@ -203,11 +223,26 @@ class MainActivity : Activity() {
                 append("  |  معاملات: ${Fa.d(s.broker.closedTrades().size.toString())}")
                 append("  |  موجودی: ${Fa.n(s.broker.equity, 2)}")
                 if (Log.enabled) append("  |  لاگر روشن (${Fa.d(Log.count().toString())})")
+                if (s.busy) append("  |  ⏳ ${s.busyText.ifEmpty { "در حال محاسبه…" }}")
                 s.lastFeedError?.takeIf { it.isNotEmpty() }?.let { append("  |  ⚠ $it") }
             }
             when (tab) {
                 0 -> refreshChartTab()
-                1, 2, 3 -> { content.removeAllViews(); content.addView(if (tab == 1) buildOrdersScreen() else if (tab == 2) buildPnlScreen() else buildReportsScreen()) }
+                else -> {
+                    // فقط وقتی محتوای تب عوض شده باشد بازسازی می‌کنیم (نه در هر تیک)
+                    val sig = "${tab}|${reportKind}|${s.broker.trades.size}|${s.broker.orders.size}|${s.broker.closedTrades().size}"
+                    if (force || sig != tabSignature) {
+                        tabSignature = sig
+                        content.removeAllViews()
+                        content.addView(
+                            when (tab) {
+                                1 -> buildOrdersScreen()
+                                2 -> buildPnlScreen()
+                                else -> buildReportsScreen()
+                            }
+                        )
+                    }
+                }
             }
         } finally {
             refreshing = false
@@ -251,10 +286,11 @@ class MainActivity : Activity() {
                 window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
             }
         }
-        if (!keepTab && tab == 0) {
+        if (tab == 0) {
+            // نوار پایین/بالا و پنل رخدادها باید با حالت تمام‌صفحه هم‌گام شوند
             content.removeAllViews()
             content.addView(buildChartScreen())
-            refreshCurrent()
+            refreshCurrent(force = true)
         }
     }
 
@@ -303,99 +339,128 @@ class MainActivity : Activity() {
     // ══════════════════════════════════════════════════════════════════════════
     //  ۱) تب چارت  (چارت تمام‌صفحه + نوارهای شناور)
     // ══════════════════════════════════════════════════════════════════════════
-    private fun buildChartScreen(): View {
-        val holder = FrameLayout(this)
+    /** خط جداکنندهٔ نازک برای مرزبندی نوارها */
+    private fun divider(): View = View(this).apply {
+        setBackgroundColor(Color.parseColor("#243040"))
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1)
+    }
 
+    /** دکمهٔ نواری توپر (هم‌اندازه و منظم — بدون همپوشانی با چارت) */
+    private fun barChip(label: String, on: Boolean = false, action: () -> Unit): View {
+        val b = Ui.btn(this, label, if (on) Palette.accent else Palette.panel2,
+            if (on) Palette.txt else Palette.dim, 11.5f)
+        b.setPadding(Ui.dp(this, 10f), 0, Ui.dp(this, 10f), 0)
+        b.setOnClickListener { action() }
+        val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, Ui.dp(this, 32f))
+        lp.marginEnd = Ui.dp(this, 4f)
+        b.layoutParams = lp
+        b.minimumWidth = 0
+        b.minWidth = 0
+        return b
+    }
+
+    /**
+     * صفحهٔ چارت: نوار ابزار و تایم‌فریم «بخشی از چیدمان» هستند (توپر و بالای چارت)،
+     * بنابراین هیچ دکمه‌ای روی چارت نمی‌افتد و رابط تمیز می‌ماند.
+     * در تمام‌صفحه فقط هدر/تب‌های اپ و پنل رخدادها پنهان می‌شوند.
+     */
+    private fun buildChartScreen(): View {
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Palette.bg)
+        }
+
+        // ── ۱) نوار ابزار (توپر، خارج از چارت) ──
+        val topBar = HorizontalScrollView(this).apply {
+            setBackgroundColor(Palette.panel)
+            isHorizontalScrollBarEnabled = false
+        }
+        val topRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(Ui.dp(this@MainActivity, 6f), Ui.dp(this@MainActivity, 5f),
+                Ui.dp(this@MainActivity, 6f), Ui.dp(this@MainActivity, 5f))
+        }
+        topBar.addView(topRow)
+        topRow.addView(barChip(if (fullscreen) "⤡ خروج" else "⛶ تمام‌صفحه") { setFullscreen(!fullscreen) })
+        topRow.addView(barChip("＋") { chart?.zoomIn() })
+        topRow.addView(barChip("−") { chart?.zoomOut() })
+        topRow.addView(barChip("◀") { chart?.scrollByBars(-10f) })
+        topRow.addView(barChip("▶") { chart?.scrollByBars(10f) })
+        topRow.addView(barChip("آخرین کندل") { chart?.goLive() })
+        topRow.addView(barChip("تنظیم نما") { chart?.resetView() })
+        topRow.addView(barChip("⋮ بیشتر") { showChartContextMenu() })
+        col.addView(topBar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        col.addView(divider())
+
+        // ── ۲) ردیف تایم‌فریم (توپر، خارج از چارت) ──
+        val tfScroll = HorizontalScrollView(this).apply {
+            setBackgroundColor(Palette.panel)
+            isHorizontalScrollBarEnabled = false
+        }
+        val tfBox = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(Ui.dp(this@MainActivity, 6f), Ui.dp(this@MainActivity, 4f),
+                Ui.dp(this@MainActivity, 6f), Ui.dp(this@MainActivity, 4f))
+        }
+        tfBox.addView(Ui.tv(this, "تایم‌فریم چارت:", 11f, Palette.dim).apply {
+            setPadding(0, 0, Ui.dp(this@MainActivity, 6f), 0)
+        })
+        for (c in tfChoices) {
+            val sel = c == s.chartTfSec
+            tfBox.addView(barChip(Tf.label(c), on = sel) {
+                Log.i(Log.CAT_UI, "تغییر تایم‌فریم چارت به ${Tf.label(c)} (تجمیع داخلی)")
+                s.changeChartTf(c)
+                showTab(0)
+            })
+        }
+        tfScroll.addView(tfBox)
+        col.addView(tfScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        col.addView(divider())
+
+        // ── ۳) چارت: تمام فضای باقی‌مانده ──
         val cv = ChartView(this)
         chart = cv
         cv.chartTfSec = s.chartTfSec
         cv.symbolName = s.symbol
         cv.onInfo = { txt -> chartInfo?.text = txt }
         cv.onGesture = { g -> Log.d(Log.CAT_UI, "ژست چارت: $g") }
-        cv.onNeedOlder = {
-            Log.d(Log.CAT_FEED, "به ابتدای داده رسیدیم — درخواست تاریخچهٔ بیشتر")
-        }
+        cv.onNeedOlder = { Log.d(Log.CAT_FEED, "به ابتدای داده رسیدیم — درخواست تاریخچهٔ بیشتر") }
         cv.onContextMenu = { showChartContextMenu() }
-        holder.addView(cv, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
-        ))
+        col.addView(cv, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        // ── نوار بالا (شناور) ──
-        val topBar = HorizontalScrollView(this).apply {
-            setBackgroundColor(Color.parseColor("#CC151A22").toInt())
-            isHorizontalScrollBarEnabled = false
-        }
-        val topRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        topBar.addView(topRow)
-        fun chip(label: String, action: () -> Unit) {
-            val b = Ui.btn(this, label, Palette.panel2, Palette.txt, 11.5f)
-            b.setPadding(Ui.dp(this, 9f), 0, Ui.dp(this, 9f), 0)
-            b.setOnClickListener { action() }
-            topRow.addView(b, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                .apply { marginEnd = Ui.dp(this@MainActivity, 5f) })
-        }
-        chip(if (fullscreen) "⤡ خروج" else "⛶ تمام‌صفحه") { setFullscreen(!fullscreen) }
-        chip("＋") { chart?.zoomIn() }
-        chip("−") { chart?.zoomOut() }
-        chip("◀") { chart?.scrollByBars(-10f) }
-        chip("▶") { chart?.scrollByBars(10f) }
-        chip("تنظیم نما") { chart?.resetView(); toast("نما بازنشانی شد") }
-        chip("آخرین کندل") { chart?.goLive() }
-        chip("حجم") { chart?.let { it.showVolume = !it.showVolume; it.invalidate() } }
-        chip("باکس‌ها") { chart?.let { it.showZones = !it.showZones; it.invalidate() } }
-        chip("برچسب‌ها") { chart?.let { it.showMarkers = !it.showMarkers; it.invalidate() } }
-        chip("∠ خطوط معامله") { chart?.let { it.showTradeLines = !it.showTradeLines; it.invalidate() } }
-        chip("⋮⋮") { showChartContextMenu() }
-        holder.addView(topBar, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { gravity = Gravity.TOP })
-
-        // ── نوار پایین (شناور): تایم‌فریم + اطلاعات ──
+        // ── ۴) نوار پایین: راهنما + رخدادها (در تمام‌صفحه پنهان می‌شود) ──
         val bottom = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#CC151A22").toInt())
+            setBackgroundColor(Palette.panel)
+            visibility = if (fullscreen) View.GONE else View.VISIBLE
         }
-        val tfRow = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
-        val tfBox = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        tfBox.addView(Ui.tv(this, "چارت (تریگر۲): ", 11f, Palette.dim).apply {
-            setPadding(Ui.dp(this@MainActivity, 8f), 0, Ui.dp(this@MainActivity, 4f), 0)
-        })
-        for (c in tfChoices) {
-            val sel = c == s.chartTfSec
-            val b = Ui.btn(this, Tf.label(c), if (sel) Palette.accent else Palette.panel2, if (sel) Palette.txt else Palette.dim, 11f)
-            b.setPadding(Ui.dp(this, 8f), 0, Ui.dp(this, 8f), 0)
-            b.setOnClickListener { Log.i(Log.CAT_UI, "تغییر تایم‌فریم چارت به ${Tf.label(c)}"); s.changeChartTf(c); chart?.chartTfSec = c }
-            tfBox.addView(b, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-                .apply { marginEnd = Ui.dp(this@MainActivity, 4f) })
-        }
-        tfRow.addView(tfBox)
-        bottom.addView(tfRow)
-        chartInfo = Ui.tv(this, "ژست‌ها: دو انگشت = زوم همزمان زمان و قیمت · یک انگشت = جابه‌جایی · کشیدن محور قیمت = فشرده/باز · دو ضربه = بازنشانی · نگه‌داشتن = کراس‌هیر و منو", 10f, Palette.dim).apply {
-            setPadding(Ui.dp(this@MainActivity, 10f), Ui.dp(this@MainActivity, 3f),
-                Ui.dp(this@MainActivity, 10f), Ui.dp(this@MainActivity, 5f))
+        col.addView(divider())
+        chartInfo = Ui.tv(this,
+            "دو انگشت: زوم هم‌زمان زمان و قیمت · یک انگشت: جابه‌جایی · محور قیمت: کشیدن = فشرده/باز، دو ضربه = خودکار · " +
+                "دو ضربه روی چارت: بازنشانی · نگه‌داشتن: کراس‌هیر و منو",
+            10f, Palette.dim).apply {
+            setPadding(Ui.dp(this@MainActivity, 8f), Ui.dp(this@MainActivity, 5f),
+                Ui.dp(this@MainActivity, 8f), Ui.dp(this@MainActivity, 5f))
         }
         bottom.addView(chartInfo)
-        holder.addView(bottom, FrameLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { gravity = Gravity.BOTTOM })
-
-        // ── پنل رویدادها (فقط در حالت غیرتمام‌صفحه) ──
+        eventsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val evScroll = ScrollView(this)
+        evScroll.addView(eventsBox)
+        bottom.addView(evScroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 118f)))
         if (!fullscreen) {
-            eventsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            val evScroll = ScrollView(this)
-            evScroll.addView(eventsBox)
-            holder.addView(evScroll, FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 150f)
-            ).apply { gravity = Gravity.BOTTOM; bottomMargin = Ui.dp(this@MainActivity, 58f) })
+            col.addView(bottom, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
-        return holder
+        return col
     }
 
     private fun showChartContextMenu() {
         val items = arrayOf(
             "تنظیم نما (بازنشانی)", "مقیاس قیمت خودکار", "رفتن به آخرین کندل",
-            "زوم به داخل", "زوم به بیرون", "ورود/خروج تمام‌صفحه",
-            "نمایش حجم", "نمایش باکس‌های ناحیه", "نمایش برچسب‌ها", "تنظیمات چارت"
+            "زوم به داخل", "زوم به بیرون", if (fullscreen) "خروج از تمام‌صفحه" else "تمام‌صفحه",
+            "نمایش حجم", "نمایش باکس‌های ناحیه", "نمایش برچسب‌ها و خطوط معامله",
+            "رخدادهای موتور", "لاگ زنده (۳۰۰ خط آخر)", "تنظیمات چارت"
         )
         AlertDialog.Builder(this).setTitle("منوی چارت").setItems(items) { _, i ->
             when (i) {
@@ -407,10 +472,38 @@ class MainActivity : Activity() {
                 5 -> setFullscreen(!fullscreen)
                 6 -> chart?.let { it.showVolume = !it.showVolume; it.invalidate() }
                 7 -> chart?.let { it.showZones = !it.showZones; it.invalidate() }
-                8 -> chart?.let { it.showMarkers = !it.showMarkers; it.invalidate() }
-                9 -> { showTab(4) }
+                8 -> chart?.let { it.showMarkers = !it.showMarkers; it.showTradeLines = !it.showTradeLines; it.invalidate() }
+                9 -> showEventsDialog()
+                10 -> showLogViewer()
+                11 -> { showTab(4) }
             }
         }.show()
+    }
+
+    /** رخدادهای موتور به‌صورت دیالوگ — در تمام‌صفحه هم قابل دسترسی */
+    private fun showEventsDialog() {
+        val e = s.engine
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(Ui.dp(this@MainActivity, 12f), Ui.dp(this@MainActivity, 8f),
+                Ui.dp(this@MainActivity, 12f), Ui.dp(this@MainActivity, 8f))
+        }
+        box.addView(Ui.tv(this,
+            "ستاپ: ${Fa.d(e.setups.size.toString())} · باکس فعال ${Fa.d(e.zones.count { it.status == ZoneStatus.ACTIVE }.toString())}" +
+                " / پاک‌شده ${Fa.d(e.zones.count { it.status == ZoneStatus.DELETED }.toString())}" +
+                " / ردشده ${Fa.d(e.zones.count { it.status == ZoneStatus.REJECTED }.toString())}",
+            12f, Palette.gold, true))
+        box.addView(Ui.label(this, "آخرین ورود", Fa.n(e.lastEntryPx)))
+        box.addView(Ui.label(this, "آخرین حد ضرر", Fa.n(e.lastSlPx)))
+        box.addView(Ui.label(this, "آخرین حد سود", Fa.n(e.lastTpPx)))
+        box.addView(Ui.label(this, "نتیجهٔ آخرین ستاپ", e.lastResult))
+        box.addView(Ui.spacer(this, 6f))
+        for (ev in e.events.takeLast(25).reversed()) {
+            box.addView(Ui.tv(this, "• $ev", 10.5f, Palette.dim))
+        }
+        AlertDialog.Builder(this).setTitle("رخدادهای موتور")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("بستن", null).show()
     }
 
     private fun refreshChartTab() {
@@ -830,7 +923,7 @@ class MainActivity : Activity() {
     }
 
     private fun showLogViewer() {
-        val lines = Log.tail(600)
+        val lines = Log.tail(300)
         val text = if (lines.isEmpty()) {
             "لاگر خاموش است یا هنوز خطی ثبت نشده.\nبرای فعال‌سازی: تنظیمات ← بخش لاگر ← «روشن بودن لاگر»."
         } else lines.joinToString("\n")
@@ -843,7 +936,8 @@ class MainActivity : Activity() {
             .setTitle("لاگ زنده (${Fa.d(lines.size.toString())} خط آخر)")
             .setView(ScrollView(this).apply { addView(tv) })
             .setPositiveButton("بستن", null)
-            .setNeutralButton("کپی") { _, _ -> copyLog() }
+            .setNeutralButton("تازه‌سازی") { _, _ -> showLogViewer() }
+            .setNegativeButton("کپی") { _, _ -> copyLog() }
             .show()
     }
 
@@ -1051,26 +1145,47 @@ class MainActivity : Activity() {
         try {
             when (requestCode) {
                 REQ_SAVE -> {
-                    Storage.writeUri(this, uri, s.buildJson())
-                    Log.i(Log.CAT_STORE, "ذخیره در مسیر انتخابی", uri.toString())
-                    toast("ذخیره شد: ${uri.lastPathSegment}")
+                    toast("در حال ذخیره…")
+                    val u = uri
+                    s.io.execute {
+                        val msg = try {
+                            Storage.writeUri(this, u, s.buildJson())
+                            "ذخیره شد: ${u.lastPathSegment}"
+                        } catch (e: Exception) { "خطای ذخیره: ${e.message}" }
+                        Log.i(Log.CAT_STORE, "ذخیره در مسیر انتخابی", u.toString())
+                        runOnUiThread { toast(msg) }
+                    }
                 }
                 REQ_LOAD -> {
                     Log.i(Log.CAT_STORE, "بازیابی از مسیر انتخابی", uri.toString())
-                    toast(s.loadFromText(Storage.readUri(this, uri)))
-                    showTab(0)
+                    toast("در حال بازیابی… (پروندهٔ بزرگ چند لحظه طول می‌کشد)")
+                    val u = uri
+                    s.io.execute {
+                        val msg = try {
+                            s.loadFromText(Storage.readUri(this, u))
+                        } catch (e: Exception) { "خطای بازیابی: ${e.message}" }
+                        runOnUiThread { toast(msg); showTab(0) }
+                    }
                 }
                 REQ_CSV -> s.importCsv(this, uri, s.baseTfSec) { m -> toast(m); showTab(0) }
                 REQ_REPORT -> { Storage.writeReport(this, uri, pendingReport ?: tradesCsv()); toast("گزارش ذخیره شد") }
                 REQ_LOG_MD -> {
-                    Storage.writeReport(this, uri, Log.reportMd())
-                    Log.i(Log.CAT_APP, "خروجی .md لاگ ذخیره شد", uri.toString())
-                    toast("لاگ با فرمت .md ذخیره شد")
+                    val u = uri
+                    s.io.execute {
+                        val text = Log.reportMd()
+                        Storage.writeReport(this, u, text)
+                        Log.i(Log.CAT_APP, "خروجی .md لاگ ذخیره شد", u.toString())
+                        runOnUiThread { toast("لاگ با فرمت .md ذخیره شد") }
+                    }
                 }
                 REQ_LOG_TXT -> {
-                    Storage.writeReport(this, uri, Log.reportTxt())
-                    Log.i(Log.CAT_APP, "خروجی .txt لاگ ذخیره شد", uri.toString())
-                    toast("لاگ با فرمت .txt ذخیره شد")
+                    val u = uri
+                    s.io.execute {
+                        val text = Log.reportTxt()
+                        Storage.writeReport(this, u, text)
+                        Log.i(Log.CAT_APP, "خروجی .txt لاگ ذخیره شد", u.toString())
+                        runOnUiThread { toast("لاگ با فرمت .txt ذخیره شد") }
+                    }
                 }
             }
         } catch (e: Exception) {

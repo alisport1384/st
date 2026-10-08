@@ -23,7 +23,13 @@ class AppState {
     val broker = PaperBroker(cfg)
 
     /** کندل‌های تایم‌فریم چارت (تریگر ۲) که موتور روی آن‌ها اجرا می‌شود */
-    val candles = ArrayList<Candle>()
+    /**
+     * فهرست کندل‌ها. به‌صورت «تعویض اتمیک» به‌روزرسانی می‌شود تا نخ رابط
+     * هرگز فهرست نیمه‌ساخته نبیند (منشأ قبلی فریز و پرش).
+     */
+    @Volatile
+    var candles: List<Candle> = emptyList()
+        private set
 
     // تنظیمات فید (اپ)
     var symbol: String = Feed.SYMBOL_DEFAULT
@@ -45,8 +51,11 @@ class AppState {
      * (سفارش‌ها اما در همان لحظه با قیمت زنده پر می‌شوند).
      */
     var backtestFull: Boolean = true
+    /** در حال محاسبهٔ سنگین (اجرای موتور/دانلود) — رابط پیام «در حال محاسبه…» نشان می‌دهد */
+    @Volatile var busy: Boolean = false
+    @Volatile var busyText: String = ""
     /** ورود خودکار به تمام‌صفحه در تب چارت */
-    var autoFullscreen: Boolean = true
+    var autoFullscreen: Boolean = false
     private var appCtx: Context? = null
 
     val io = Executors.newSingleThreadExecutor()
@@ -63,10 +72,13 @@ class AppState {
     /** راه‌اندازی لاگر و هشدارها + وصل کردن آن‌ها به موتور و کارگزار */
     fun initApp(ctx: Context) {
         appCtx = ctx.applicationContext
-        Log.init(appCtx!!, "1.1")
+        Log.init(appCtx!!, "1.2")
         Alerts.init(appCtx!!)
         val p = appCtx!!.getSharedPreferences("goldpin", Context.MODE_PRIVATE)
-        autoFullscreen = p.getBoolean("auto_fullscreen", true)
+        // مهاجرت ۱٫۱ → ۱٫۲: تمام‌صفحهٔ خودکار دیگر پیش‌فرض نیست؛ تنظیم قدیمی true را یک‌بار خاموش کن.
+        val uiVersion = p.getInt("ui_prefs_version", 0)
+        autoFullscreen = if (uiVersion < 2) false else p.getBoolean("auto_fullscreen", false)
+        if (uiVersion < 2) p.edit().putBoolean("auto_fullscreen", false).putInt("ui_prefs_version", 2).apply()
         Log.i(Log.CAT_APP, "AppState راه‌اندازی شد",
             "autoFullscreen=$autoFullscreen logEnabled=${Log.enabled} alerts=${Alerts.enabled}")
         wireLogging()
@@ -97,8 +109,13 @@ class AppState {
     fun onChange(f: () -> Unit) { listeners.add(f) }
 
     fun notifyUi() {
-        if (Looper.myLooper() == Looper.getMainLooper()) listeners.forEach { it() }
-        else main.post { listeners.forEach { it() } }
+        val run = Runnable {
+            // هر شنونده جدا محافظت می‌شود تا یک خطا کل رابط را از کار نیندازد
+            for (f in ArrayList(listeners)) {
+                try { f() } catch (t: Throwable) { Log.e(Log.CAT_UI, "خطا در شنوندهٔ رابط", t) }
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) run.run() else main.post(run)
     }
 
     fun offChange(f: () -> Unit) { listeners.remove(f) }
@@ -141,10 +158,14 @@ class AppState {
     }
 
     fun setCandles(list: List<Candle>, rebuildNow: Boolean = true) {
-        Log.i(Log.CAT_FEED, "داده در اپ گذاشته شد", "کندل=${list.size} بازه=${if (list.size > 1) "٪" else "-"}")
-        candles.clear()
-        candles.addAll(list)
-        if (rebuildNow) rebuild()
+        Log.i(Log.CAT_FEED, "داده در اپ گذاشته شد", "کندل=${list.size}")
+        busy = true
+        try {
+            candles = ArrayList(list)          // تعویض اتمیک
+            if (rebuildNow) rebuild()
+        } finally {
+            busy = false
+        }
         notifyUi()
     }
 
@@ -167,10 +188,13 @@ class AppState {
                 val n = chart.size
                 Log.i(Log.CAT_FEED, "دانلود تاریخچه موفق",
                     "کندل=$n مدت=${System.currentTimeMillis() - t0}ms پایه=${com.alisport.goldpin.core.Tf.label(base)} بازه=$range")
+                // اجرای موتور روی همین نخ پس‌زمینه انجام می‌شود (رابط کاربری فریز نمی‌کند)
+                busyText = "در حال محاسبهٔ موتور روی ${com.alisport.goldpin.util.Fa.d(n.toString())} کندل…"
+                setCandles(chart)
                 main.post {
-                    setCandles(chart)
                     lastFeedAt = System.currentTimeMillis()
                     lastFeedError = null
+                    notifyUi()
                     onDone("دانلود شد: ${com.alisport.goldpin.util.Fa.d(n.toString())} کندل (${com.alisport.goldpin.core.Tf.label(chartTfSec)})")
                 }
             } catch (e: Exception) {
@@ -235,8 +259,7 @@ class AppState {
         val merged = ArrayList<Candle>(cut + tail.size)
         for (i in 0 until cut) merged.add(candles[i])
         for (c in tail) merged.add(c)
-        candles.clear()
-        candles.addAll(merged.mapIndexed { i, c -> Candle(i, c.t, c.o, c.h, c.l, c.c, c.v) })
+        candles = merged.mapIndexed { i, c -> Candle(i, c.t, c.o, c.h, c.l, c.c, c.v) }
         Log.d(Log.CAT_LIVE, "ادغام دنبالهٔ داده", "قبل=$before بعد=${candles.size} جدید=${candles.size - before}")
     }
 
@@ -280,21 +303,40 @@ class AppState {
     fun saveToAutoFile(ctx: Context): String {
         val t0 = System.currentTimeMillis()
         return try {
+            busy = true
             val json = buildJson()
-            Storage.writeText(Storage.autoFile(ctx), json)
+            val main = Storage.autoFile(ctx)
+            try {   // پشتیبان از آخرین نسخهٔ سالم
+                if (main.exists()) {
+                    val tmp = java.io.File(main.parentFile, main.name + ".tmp")
+                    main.copyTo(tmp, overwrite = true)
+                    val bak = java.io.File(main.parentFile, main.name + ".bak")
+                    if (bak.exists()) bak.delete()
+                    tmp.renameTo(bak)
+                }
+            } catch (e: Exception) { Log.w(Log.CAT_STORE, "نسخهٔ پشتیبان ساخته نشد", e.message ?: "") }
+            Storage.writeText(main, json)
             Log.i(Log.CAT_STORE, "ذخیرهٔ خودکار انجام شد",
                 "بایت=${json.length} کندل=${candles.size} باکس=${engine.zones.size} سفارش=${broker.orders.size} معامله=${broker.trades.size} مدت=${System.currentTimeMillis() - t0}ms")
             "ذخیره شد: ${Storage.autoFile(ctx).absolutePath}"
         } catch (e: Exception) {
             Log.e(Log.CAT_STORE, "ذخیرهٔ خودکار ناموفق", e)
             "خطای ذخیره: ${e.message}"
+        } finally {
+            busy = false
         }
     }
 
     fun loadFromAutoFile(ctx: Context): String {
         val f: File = Storage.autoFile(ctx)
         if (!f.exists()) return "فایل ذخیره‌ای پیدا نشد"
-        return loadFromText(Storage.readText(f))
+        return try {
+            loadFromText(Storage.readText(f))
+        } catch (e: Exception) {
+            // هرگز اپ را با فایل خراب از کار نینداز؛ فقط اطلاع بده
+            Log.e(Log.CAT_STORE, "بازیابی خودکار ناموفق بود", e)
+            "بازیابی نشد: ${e.message}"
+        }
     }
 
     /** بارگذاری کامل — وضعیت دقیقاً همان‌طور که ذخیره شده بود برمی‌گردد. */
@@ -312,7 +354,7 @@ class AppState {
             engine.broker = broker
             broker.engine = engine
             engine.barCommitHook = { cd -> broker.onBar(cd, live = false) }
-            candles.clear(); candles.addAll(ld.candles)
+            candles = ArrayList(ld.candles)
             val m = ld.meta
             symbol = m["symbol"]?.toString() ?: symbol
             baseTfSec = (m["baseTfSec"] as? Long)?.toInt() ?: baseTfSec
@@ -401,7 +443,7 @@ class AppState {
     /** پاک کردن کامل */
     fun wipe() {
         Log.w(Log.CAT_APP, "پاک کردن همهٔ داده‌ها و وضعیت")
-        candles.clear()
+        candles = emptyList()
         broker.reset()
         engine.reset()
         engine.broker = broker; broker.engine = engine
