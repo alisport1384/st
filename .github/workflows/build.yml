@@ -242,5 +242,3 @@ jobs:
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
-          # اگر همان tag دوباره اجرا شود، فایل‌ها جایگزین شوند نه اینکه job بشکند
-          overwrite: true
