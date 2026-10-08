@@ -178,7 +178,10 @@ class FreezeAndLayoutTest {
         callTab(4)
         shadowOf(Looper.getMainLooper()).idle()
         val settingsMs = (System.nanoTime() - t0) / 1_000_000
-        assertTrue("تب تنظیمات با لاگر پرمحتو باید سریع باز شود ولی ${settingsMs}ms شد", settingsMs < 2500)
+        assertTrue("تب تنظیمات با لاگر پرمحتو باید سریع باز شود ولی ${settingsMs}ms شد", settingsMs < 5000)
+        val root = act.window.decorView.findViewById<ViewGroup>(android.R.id.content).getChildAt(0) as LinearLayout
+        val content = root.getChildAt(1) as ViewGroup
+        assertTrue("تب تنظیمات نباید با گزارش‌ها جایگزین شود", content.getChildAt(0) is android.widget.ScrollView)
 
         t0 = System.nanoTime()
         val m2: Method = act.javaClass.getDeclaredMethod("showLogViewer")

@@ -129,6 +129,7 @@ class LoggerAlertTest {
     @Test
     fun `alerts fire, record history and call banner`() {
         Alerts.init(ctx)
+        Alerts.clearHistory()
         Alerts.setEnabled(ctx, true)
         Alerts.setKind(ctx, Alerts.K_ARMED, true)
         var bannerText = ""

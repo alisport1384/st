@@ -62,6 +62,37 @@ class AppState {
     val main = Handler(Looper.getMainLooper())
     val listeners = ArrayList<() -> Unit>()
 
+    // موتور در نخ IO بازسازی می‌شود و رابط در نخ اصلی می‌خواند؛ همهٔ نماها snapshot می‌گیرند.
+    private val stateLock = Any()
+    data class UiSnapshot(
+        val candles: List<Candle>,
+        val zones: List<ZoneBox>,
+        val markers: List<Marker>,
+        val setups: List<Setup>,
+        val events: List<String>,
+        val orders: List<Order>,
+        val trades: List<Trade>,
+        val openTrade: Trade?,
+        val pendingOrder: Order?,
+        val lastPocPx: Double,
+        val lastEntryPx: Double,
+        val lastSlPx: Double,
+        val lastTpPx: Double,
+        val lastResult: String
+    )
+
+    fun uiSnapshot(): UiSnapshot = synchronized(stateLock) {
+        UiSnapshot(
+            candles.toList(), engine.zones.toList(), engine.markers.toList(), engine.setups.toList(),
+            engine.events.toList(), broker.orders.toList(), broker.trades.toList(),
+            broker.openTrade, broker.pendingOrder, engine.lastPocPx, engine.lastEntryPx,
+            engine.lastSlPx, engine.lastTpPx, engine.lastResult
+        )
+    }
+
+    fun tradesSnapshot(): List<Trade> = synchronized(stateLock) { broker.trades.toList() }
+    fun ordersSnapshot(): List<Order> = synchronized(stateLock) { broker.orders.toList() }
+
     init {
         engine.broker = broker
         broker.engine = engine
@@ -72,7 +103,7 @@ class AppState {
     /** راه‌اندازی لاگر و هشدارها + وصل کردن آن‌ها به موتور و کارگزار */
     fun initApp(ctx: Context) {
         appCtx = ctx.applicationContext
-        Log.init(appCtx!!, "1.2")
+        Log.init(appCtx!!, "1.3")
         Alerts.init(appCtx!!)
         val p = appCtx!!.getSharedPreferences("goldpin", Context.MODE_PRIVATE)
         // مهاجرت ۱٫۱ → ۱٫۲: تمام‌صفحهٔ خودکار دیگر پیش‌فرض نیست؛ تنظیم قدیمی true را یک‌بار خاموش کن.
@@ -121,8 +152,28 @@ class AppState {
     fun offChange(f: () -> Unit) { listeners.remove(f) }
 
     // ── تنظیمات و بازسازی ──────────────────────────────────────────────────────
+    /** بازسازی غیرهمزمان؛ تغییرات تنظیمات هرگز نخ رابط را قفل نمی‌کنند. */
+    fun rebuildAsync(clearOrders: Boolean = true) {
+        busy = true
+        busyText = "در حال بازسازی موتور…"
+        notifyUi()
+        io.execute {
+            try {
+                rebuild(clearOrders)
+            } catch (e: Throwable) {
+                Log.e(Log.CAT_ENGINE, "بازسازی موتور ناموفق بود", e)
+                lastFeedError = "خطای بازسازی موتور: ${e.message}"
+            } finally {
+                busy = false
+                busyText = ""
+                notifyUi()
+            }
+        }
+    }
+
     /** بعد از تغییر تنظیمات: موتور و کارگزار از صفر روی دادهٔ موجود اجرا می‌شوند. */
     fun rebuild(clearOrders: Boolean = true) {
+        synchronized(stateLock) {
         val t0 = System.currentTimeMillis()
         Log.i(Log.CAT_ENGINE, "شروع اجرای مجدد موتور",
             "کندل=${candles.size} مود=${cfg.tfMode} چارت=${com.alisport.goldpin.core.Tf.label(chartTfSec)} بک‌تست‌کامل=$backtestFull پاک‌کردن‌سفارش=$clearOrders")
@@ -141,20 +192,36 @@ class AppState {
                 "میانی=${engine.cnt.mid} ولوم‌کم=${engine.cnt.lv} ولوم‌زیاد=${engine.cnt.hv} ورود=${engine.cnt.entry} پایان=${engine.cnt.done} " +
                 "باکس=${engine.zones.size} سفارش=${broker.orders.size} معامله=${broker.trades.size} موجودی=${Fa.n(broker.balance, 2)}")
         notifyUi()
+        }
     }
 
     fun setMode(modeIdx: Int) {
         Log.i(Log.CAT_CFG, "تغییر مود تایم‌فریمی", "مود=$modeIdx")
         val m = TF_MODES.firstOrNull { it.idx == modeIdx } ?: TF_MODES[0]
-        cfg.tfMode = m.idx
-        if (!m.custom) { cfg.tfS = m.s; cfg.tfM = m.m; cfg.tf1 = m.t1; cfg.tf2 = m.t2 }
-        if (chartTfSec != cfg.tf2) {
-            chartTfSec = cfg.tf2
-            setCandles(Feed.aggregate(candles, chartTfSec).let { res ->
-                if (useSyntheticVolume) Feed.synthesizeVolumeIfMissing(res) else res
-            }, rebuildNow = false)
+        busy = true
+        busyText = "در حال تغییر مود تایم‌فریمی…"
+        notifyUi()
+        io.execute {
+            try {
+                cfg.tfMode = m.idx
+                if (!m.custom) { cfg.tfS = m.s; cfg.tfM = m.m; cfg.tf1 = m.t1; cfg.tf2 = m.t2 }
+                if (chartTfSec != cfg.tf2) {
+                    chartTfSec = cfg.tf2
+                    val res = Feed.aggregate(candles, chartTfSec).let {
+                        if (useSyntheticVolume) Feed.synthesizeVolumeIfMissing(it) else it
+                    }
+                    setCandles(res, rebuildNow = false)
+                }
+                rebuild()
+            } catch (e: Throwable) {
+                Log.e(Log.CAT_ENGINE, "تغییر مود ناموفق بود", e)
+                lastFeedError = "خطای تغییر مود: ${e.message}"
+            } finally {
+                busy = false
+                busyText = ""
+                notifyUi()
+            }
         }
-        rebuild()
     }
 
     fun setCandles(list: List<Candle>, rebuildNow: Boolean = true) {
@@ -172,6 +239,10 @@ class AppState {
     // ── دانلود تاریخچه از فید ───────────────────────────────────────────────────
     fun downloadHistory(onDone: (String) -> Unit = {}) {
         val t0 = System.currentTimeMillis()
+        busy = true
+        busyText = "در حال دانلود تاریخچهٔ طلا…"
+        lastFeedError = null
+        notifyUi()
         Log.i(Log.CAT_FEED, "شروع دانلود تاریخچه", "نماد=$symbol چارت=${com.alisport.goldpin.core.Tf.label(chartTfSec)} عمق=$depth")
         io.execute {
             try {
@@ -194,6 +265,8 @@ class AppState {
                 main.post {
                     lastFeedAt = System.currentTimeMillis()
                     lastFeedError = null
+                    busy = false
+                    busyText = ""
                     notifyUi()
                     onDone("دانلود شد: ${com.alisport.goldpin.util.Fa.d(n.toString())} کندل (${com.alisport.goldpin.core.Tf.label(chartTfSec)})")
                 }
@@ -202,6 +275,8 @@ class AppState {
                 Log.e(Log.CAT_FEED, "دانلود تاریخچه ناموفق", e)
                 main.post {
                     lastFeedError = msg
+                    busy = false
+                    busyText = ""
                     notifyUi()
                     onDone("خطای دانلود: $msg")
                 }
@@ -276,14 +351,12 @@ class AppState {
                 var raw = Feed.yahooChart(symbol, interval, range)
                 var chart = if (base == newTf) raw else Feed.aggregate(raw, newTf)
                 if (useSyntheticVolume) chart = Feed.synthesizeVolumeIfMissing(chart)
-                main.post { setCandles(chart) }
+                setCandles(chart)
             } catch (e: Exception) {
                 // بدون شبکه: از دادهٔ موجود تجمیع می‌کنیم
                 val chart = Feed.aggregate(candles, newTf)
-                main.post {
-                    lastFeedError = "تجمیع داخلی از دادهٔ موجود: ${e.message}"
-                    setCandles(chart)
-                }
+                lastFeedError = "تجمیع داخلی از دادهٔ موجود: ${e.message}"
+                setCandles(chart)
             }
         }
     }
@@ -460,8 +533,8 @@ class AppState {
                     var list = Feed.parseCsv(text)
                     list = Feed.aggregate(list, chartTfSec)
                     Log.i(Log.CAT_FEED, "دادهٔ نمونهٔ داخلی بارگذاری شد", "کندل=${list.size}")
+                    setCandles(list)
                     main.post {
-                        setCandles(list)
                         onDone("نمونهٔ داخلی بارگذاری شد: ${com.alisport.goldpin.util.Fa.d(list.size.toString())} کندل")
                     }
                 }
@@ -482,8 +555,8 @@ class AppState {
                 baseTfSec = baseTfGuess
                 if (baseTfGuess != chartTfSec) list = Feed.aggregate(list, chartTfSec)
                 if (useSyntheticVolume) list = Feed.synthesizeVolumeIfMissing(list)
+                setCandles(list)
                 main.post {
-                    setCandles(list)
                     onDone("وارد شد: ${com.alisport.goldpin.util.Fa.d(list.size.toString())} کندل")
                 }
             } catch (e: Exception) {

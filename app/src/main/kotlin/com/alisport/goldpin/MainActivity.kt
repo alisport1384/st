@@ -84,7 +84,7 @@ class MainActivity : Activity() {
     // ══════════════════════════════════════════════════════════════════════════
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Log.i(Log.CAT_APP, "MainActivity ساخته شد", "نسخهٔ ۱٫۱")
+        Log.i(Log.CAT_APP, "MainActivity ساخته شد", "نسخهٔ ۱٫۳")
         AppState.init(applicationContext)
         Alerts.bannerSink = { text, color, kind -> showBanner(text, color, kind) }
         buildShell()
@@ -194,7 +194,7 @@ class MainActivity : Activity() {
             3 -> content.addView(buildReportsScreen())
             4 -> content.addView(buildSettingsScreen())
         }
-        tabSignature = "$i|$reportKind|${s.broker.trades.size}|${s.broker.orders.size}|${s.broker.closedTrades().size}"
+        tabSignature = "$i|$reportKind|${s.tradesSnapshot().size}|${s.ordersSnapshot().size}|${s.tradesSnapshot().count { !it.open }}"
         refreshCurrent(force = true)
     }
 
@@ -220,7 +220,7 @@ class MainActivity : Activity() {
             headerStatus.text = buildString {
                 append(if (s.liveRunning) "● لایو" else "○ لایو خاموش")
                 append("  |  ${Tf.label(s.chartTfSec)}  |  روند: $trend")
-                append("  |  معاملات: ${Fa.d(s.broker.closedTrades().size.toString())}")
+                append("  |  معاملات: ${Fa.d(s.tradesSnapshot().count { !it.open }.toString())}")
                 append("  |  موجودی: ${Fa.n(s.broker.equity, 2)}")
                 if (Log.enabled) append("  |  لاگر روشن (${Fa.d(Log.count().toString())})")
                 if (s.busy) append("  |  ⏳ ${s.busyText.ifEmpty { "در حال محاسبه…" }}")
@@ -228,9 +228,9 @@ class MainActivity : Activity() {
             }
             when (tab) {
                 0 -> refreshChartTab()
-                else -> {
+                1, 2, 3 -> {
                     // فقط وقتی محتوای تب عوض شده باشد بازسازی می‌کنیم (نه در هر تیک)
-                    val sig = "${tab}|${reportKind}|${s.broker.trades.size}|${s.broker.orders.size}|${s.broker.closedTrades().size}"
+                    val sig = "${tab}|${reportKind}|${s.tradesSnapshot().size}|${s.ordersSnapshot().size}|${s.tradesSnapshot().count { !it.open }}"
                     if (force || sig != tabSignature) {
                         tabSignature = sig
                         content.removeAllViews()
@@ -243,6 +243,7 @@ class MainActivity : Activity() {
                         )
                     }
                 }
+                4 -> Unit // تنظیمات خودش ساخته شده؛ هیچ‌وقت با تب گزارش جایگزین نشود
             }
         } finally {
             refreshing = false
@@ -508,15 +509,16 @@ class MainActivity : Activity() {
 
     private fun refreshChartTab() {
         val cv = chart ?: return
-        cv.candles = s.candles
-        cv.zones = s.engine.zones
-        cv.markers = s.engine.markers
-        cv.trades = s.broker.trades
-        cv.pocPrice = s.engine.lastPocPx
+        val snap = s.uiSnapshot()
+        cv.candles = snap.candles
+        cv.zones = snap.zones
+        cv.markers = snap.markers
+        cv.trades = snap.trades
+        cv.pocPrice = snap.lastPocPx
         cv.livePulse = s.liveRunning
         cv.symbolName = s.symbol
         cv.chartTfSec = s.chartTfSec
-        cv.overlays = s.engine.setups.map { st ->
+        cv.overlays = snap.setups.map { st ->
             SetupOverlay(st.id, st.dir, st.stage, st.zTop, st.zBot, st.lvH, st.lvL, st.hvH, st.hvL,
                 st.entry, st.sl, st.tp1, st.tp2, st.tpx, st.midRef, st.zBi)
         }
@@ -524,27 +526,25 @@ class MainActivity : Activity() {
 
         eventsBox?.let { box ->
             box.removeAllViews()
-            val e = s.engine
             box.addView(Ui.tv(this,
-                "ستاپ: ${Fa.d(e.setups.size.toString())} · باکس فعال ${Fa.d(e.zones.count { it.status == ZoneStatus.ACTIVE }.toString())}" +
-                    " / پاک‌شده ${Fa.d(e.zones.count { it.status == ZoneStatus.DELETED }.toString())}" +
-                    " / ردشده ${Fa.d(e.zones.count { it.status == ZoneStatus.REJECTED }.toString())}" +
-                    " · آخرین ورود ${Fa.n(e.lastEntryPx)} · SL ${Fa.n(e.lastSlPx)} · TP ${Fa.n(e.lastTpPx)} · نتیجه: ${e.lastResult}",
+                "ستاپ: ${Fa.d(snap.setups.size.toString())} · باکس فعال ${Fa.d(snap.zones.count { it.status == ZoneStatus.ACTIVE }.toString())}" +
+                    " / پاک‌شده ${Fa.d(snap.zones.count { it.status == ZoneStatus.DELETED }.toString())}" +
+                    " / ردشده ${Fa.d(snap.zones.count { it.status == ZoneStatus.REJECTED }.toString())}" +
+                    " · آخرین ورود ${Fa.n(snap.lastEntryPx)} · SL ${Fa.n(snap.lastSlPx)} · TP ${Fa.n(snap.lastTpPx)} · نتیجه: ${snap.lastResult}",
                 10.5f, Palette.txt).apply {
                 setPadding(Ui.dp(this@MainActivity, 8f), Ui.dp(this@MainActivity, 3f), 0, Ui.dp(this@MainActivity, 3f))
             })
-            val evs = e.events.takeLast(12).reversed()
-            for (ev in evs) {
+            for (ev in snap.events.takeLast(12).reversed()) {
                 box.addView(Ui.tv(this, "• $ev", 10.5f, Palette.dim).apply {
                     setPadding(Ui.dp(this@MainActivity, 8f), Ui.dp(this@MainActivity, 1f),
                         Ui.dp(this@MainActivity, 8f), Ui.dp(this@MainActivity, 1f))
                 })
             }
-            s.broker.openTrade?.takeIf { it.open }?.let { t ->
+            snap.openTrade?.takeIf { it.open }?.let { t ->
                 box.addView(Ui.tv(this, "پوزیشن باز: ${if (t.dir == 1) "خرید" else "فروش"} @ ${Fa.n(t.entry)} · سود/زیان ${Fa.signed(t.pnl())}",
                     11f, Palette.gold))
             }
-            s.broker.pendingOrder?.let { o ->
+            snap.pendingOrder?.let { o ->
                 box.addView(Ui.tv(this, "سفارش آماده: ${if (o.dir == 1) "خرید لیمیت" else "فروش لیمیت"} @ ${Fa.n(o.price)}",
                     11f, Palette.accent))
             }
@@ -556,7 +556,7 @@ class MainActivity : Activity() {
     // ══════════════════════════════════════════════════════════════════════════
     private fun buildOrdersScreen(): View {
         val v = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val orders = s.broker.orders
+        val orders = s.ordersSnapshot()
         v.addView(Ui.tv(this, "سفارش‌ها (${Fa.d(orders.size.toString())})", 12.5f, Palette.gold, true).apply {
             setPadding(Ui.dp(this@MainActivity, 8f), Ui.dp(this@MainActivity, 6f), 0, Ui.dp(this@MainActivity, 4f))
         })
@@ -570,7 +570,7 @@ class MainActivity : Activity() {
         lv1.setOnItemClickListener { _, _, p, _ -> showOrderDialog(orders[orders.size - 1 - p]) }
         v.addView(lv1, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         v.addView(Ui.hline(this))
-        val trades = s.broker.trades
+        val trades = s.tradesSnapshot()
         v.addView(Ui.tv(this, "معاملات (${Fa.d(trades.size.toString())})", 12.5f, Palette.gold, true).apply {
             setPadding(Ui.dp(this@MainActivity, 8f), Ui.dp(this@MainActivity, 6f), 0, Ui.dp(this@MainActivity, 4f))
         })
@@ -636,7 +636,8 @@ class MainActivity : Activity() {
     // ══════════════════════════════════════════════════════════════════════════
     private fun buildPnlScreen(): View {
         val v = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val sum = Reports.summary(s.broker.trades)
+        val pnlTrades = s.tradesSnapshot()
+        val sum = Reports.summary(pnlTrades)
         val box = Ui.box(this)
         box.addView(Ui.tv(this, "خلاصهٔ عملکرد", 13f, Palette.gold, true))
         box.addView(Ui.label(this, "سود/زیان خالص (دلار)", Fa.signed(sum.net), vColor = if (sum.net >= 0) Palette.up else Palette.down))
@@ -648,14 +649,14 @@ class MainActivity : Activity() {
         box.addView(Ui.label(this, "موجودی نهایی", Fa.n(s.broker.balance, 2)))
         v.addView(box)
         val eq = EquityChartView(this)
-        eq.setData(s.broker.trades, s.cfg.initialEquity)
-        eq.onPick = { idx -> s.broker.trades.getOrNull(idx)?.let { showTradeDialog(it) } }
+        eq.setData(pnlTrades, s.cfg.initialEquity)
+        eq.onPick = { idx -> pnlTrades.getOrNull(idx)?.let { showTradeDialog(it) } }
         v.addView(eq, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(this, 185f)))
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row.addView(Ui.btn(this, "بازگشت زوم", Palette.panel2, Palette.txt, 11f).apply { setOnClickListener { eq.resetZoom() } })
         row.addView(Ui.btn(this, "CSV معاملات", Palette.panel2, Palette.txt, 11f).apply { setOnClickListener { exportTradesCsv() } })
         v.addView(row)
-        val list = s.broker.trades.reversed()
+        val list = pnlTrades.reversed()
         val lv = ListView(this)
         lv.adapter = object : BaseAdapter() {
             override fun getCount() = list.size
@@ -700,7 +701,7 @@ class MainActivity : Activity() {
         v.addView(export)
 
         s.io.execute {
-            val snapshot = s.broker.trades.toList()
+            val snapshot = s.tradesSnapshot()
             val rows = Reports.group(snapshot, kindAtStart)
             val sum = Reports.summary(snapshot)
             runOnUiThread {
@@ -828,45 +829,45 @@ class MainActivity : Activity() {
             v.addView(Ui.spacer(this, 3f))
         }
         if (s.cfg.tfMode == 5) {
-            v.addView(pickRow("ساختار", s.cfg.tfS) { s.cfg.tfS = it; s.rebuild() })
-            v.addView(pickRow("میانی", s.cfg.tfM) { s.cfg.tfM = it; s.rebuild() })
-            v.addView(pickRow("تریگر ۱", s.cfg.tf1) { s.cfg.tf1 = it; s.rebuild() })
+            v.addView(pickRow("ساختار", s.cfg.tfS) { s.cfg.tfS = it; s.rebuildAsync() })
+            v.addView(pickRow("میانی", s.cfg.tfM) { s.cfg.tfM = it; s.rebuildAsync() })
+            v.addView(pickRow("تریگر ۱", s.cfg.tf1) { s.cfg.tf1 = it; s.rebuildAsync() })
             v.addView(pickRow("تریگر ۲ (چارت)", s.cfg.tf2) { s.changeChartTf(it) })
         }
 
         // ── پروفایل حجم ──
         v.addView(Ui.section(this, "④ پروفایل حجم و ناحیه‌ها (الگوریتم v2)"))
-        v.addView(numRow("تعداد ردیف‌ها", s.cfg.vpRows.toDouble()) { s.cfg.vpRows = it.toInt(); s.rebuild() })
-        v.addView(numRow("هموارسازی (۰-۳)", s.cfg.vpSmooth.toDouble()) { s.cfg.vpSmooth = it.toInt(); s.rebuild() })
-        v.addView(numRow("حداقل ردیف یک ناحیه", s.cfg.minZoneRows.toDouble()) { s.cfg.minZoneRows = it.toInt(); s.rebuild() })
+        v.addView(numRow("تعداد ردیف‌ها", s.cfg.vpRows.toDouble()) { s.cfg.vpRows = it.toInt(); s.rebuildAsync() })
+        v.addView(numRow("هموارسازی (۰-۳)", s.cfg.vpSmooth.toDouble()) { s.cfg.vpSmooth = it.toInt(); s.rebuildAsync() })
+        v.addView(numRow("حداقل ردیف یک ناحیه", s.cfg.minZoneRows.toDouble()) { s.cfg.minZoneRows = it.toInt(); s.rebuildAsync() })
         v.addView(numRow("حداکثر باکس روی چارت", s.cfg.maxZoneBoxes.toDouble()) { s.cfg.maxZoneBoxes = it.toInt() })
-        v.addView(switchRow("نمایش ناحیه‌های ردشده", s.cfg.showRejectedZones) { s.cfg.showRejectedZones = it; s.rebuild() })
-        v.addView(switchRow("پاک کردن باکس با کلوز از سمت دور", s.cfg.clearUsedZones) { s.cfg.clearUsedZones = it; s.rebuild() })
+        v.addView(switchRow("نمایش ناحیه‌های ردشده", s.cfg.showRejectedZones) { s.cfg.showRejectedZones = it; s.rebuildAsync() })
+        v.addView(switchRow("پاک کردن باکس با کلوز از سمت دور", s.cfg.clearUsedZones) { s.cfg.clearUsedZones = it; s.rebuildAsync() })
         val dists = arrayOf("مثلثی حول Close", "مثلثی حول Typical", "یکنواخت")
         dists.forEachIndexed { i, n ->
             v.addView(Ui.btn(this, "توزیع حجم: $n", if (s.cfg.distMode == i) Palette.accent else Palette.panel2,
                 if (s.cfg.distMode == i) Palette.txt else Palette.dim, 11f).apply {
-                setOnClickListener { s.cfg.distMode = i; s.rebuild(); showTab(4) }
+                setOnClickListener { s.cfg.distMode = i; s.rebuildAsync(); showTab(4) }
             })
         }
 
         // ── موتور ──
         v.addView(Ui.section(this, "⑤ موتور استراتژی"))
-        v.addView(numRow("حداکثر ستاپ هم‌زمان", s.cfg.maxSetups.toDouble()) { s.cfg.maxSetups = it.toInt(); s.rebuild() })
-        v.addView(switchRow("شکست تایید میانی با کلوز (خاموش = سایه)", s.cfg.midInvalidClose) { s.cfg.midInvalidClose = it; s.rebuild() })
-        v.addView(switchRow("اسکن ولوم زیاد از اولین برگشت به باکس", s.cfg.hvScanFirstTouch) { s.cfg.hvScanFirstTouch = it; s.rebuild() })
-        v.addView(switchRow("کندل ولوم زیاد = اولین افزایش حجم", s.cfg.hvMarkFirstIncrease) { s.cfg.hvMarkFirstIncrease = it; s.rebuild() })
+        v.addView(numRow("حداکثر ستاپ هم‌زمان", s.cfg.maxSetups.toDouble()) { s.cfg.maxSetups = it.toInt(); s.rebuildAsync() })
+        v.addView(switchRow("شکست تایید میانی با کلوز (خاموش = سایه)", s.cfg.midInvalidClose) { s.cfg.midInvalidClose = it; s.rebuildAsync() })
+        v.addView(switchRow("اسکن ولوم زیاد از اولین برگشت به باکس", s.cfg.hvScanFirstTouch) { s.cfg.hvScanFirstTouch = it; s.rebuildAsync() })
+        v.addView(switchRow("کندل ولوم زیاد = اولین افزایش حجم", s.cfg.hvMarkFirstIncrease) { s.cfg.hvMarkFirstIncrease = it; s.rebuildAsync() })
 
         // ── معامله ──
         v.addView(Ui.section(this, "⑥ معامله و بک‌تست"))
-        v.addView(numRow("بافر حدضرر (تیک)", s.cfg.slBufTicks) { s.cfg.slBufTicks = it; s.rebuild() })
-        v.addView(numRow("حداقل فاصلهٔ حدسود (واحد)", s.cfg.minTPunits) { s.cfg.minTPunits = it; s.rebuild() })
-        v.addView(switchRow("حجم بر اساس ریسک ثابت (خاموش = درصد سرمایه)", s.cfg.useRiskPct) { s.cfg.useRiskPct = it; s.rebuild() })
-        v.addView(numRow("ریسک هر معامله (٪)", s.cfg.riskPct) { s.cfg.riskPct = it; s.rebuild() })
-        v.addView(numRow("حداکثر اهرم", s.cfg.maxLeverage) { s.cfg.maxLeverage = it; s.rebuild() })
-        v.addView(numRow("سرمایهٔ اولیه", s.cfg.initialEquity) { s.cfg.initialEquity = it; s.rebuild() })
-        v.addView(numRow("لغو سفارش پس از N کندل", s.cfg.maxBarsToFill.toDouble()) { s.cfg.maxBarsToFill = it.toInt(); s.rebuild() })
-        v.addView(numRow("اندازهٔ قرارداد", s.cfg.contractSize) { s.cfg.contractSize = it; s.rebuild() })
+        v.addView(numRow("بافر حدضرر (تیک)", s.cfg.slBufTicks) { s.cfg.slBufTicks = it; s.rebuildAsync() })
+        v.addView(numRow("حداقل فاصلهٔ حدسود (واحد)", s.cfg.minTPunits) { s.cfg.minTPunits = it; s.rebuildAsync() })
+        v.addView(switchRow("حجم بر اساس ریسک ثابت (خاموش = درصد سرمایه)", s.cfg.useRiskPct) { s.cfg.useRiskPct = it; s.rebuildAsync() })
+        v.addView(numRow("ریسک هر معامله (٪)", s.cfg.riskPct) { s.cfg.riskPct = it; s.rebuildAsync() })
+        v.addView(numRow("حداکثر اهرم", s.cfg.maxLeverage) { s.cfg.maxLeverage = it; s.rebuildAsync() })
+        v.addView(numRow("سرمایهٔ اولیه", s.cfg.initialEquity) { s.cfg.initialEquity = it; s.rebuildAsync() })
+        v.addView(numRow("لغو سفارش پس از N کندل", s.cfg.maxBarsToFill.toDouble()) { s.cfg.maxBarsToFill = it.toInt(); s.rebuildAsync() })
+        v.addView(numRow("اندازهٔ قرارداد", s.cfg.contractSize) { s.cfg.contractSize = it; s.rebuildAsync() })
 
         // ── فید ──
         v.addView(Ui.section(this, "⑦ فید داده (طلا)"))
@@ -880,11 +881,21 @@ class MainActivity : Activity() {
             })
         }
         v.addView(switchRow("ساخت حجم تقریبی اگر فید حجم نداشت", s.useSyntheticVolume) { s.useSyntheticVolume = it })
-        v.addView(switchRow("حالت بک‌تست کامل (آخرین کندل هم بسته)", s.backtestFull) { s.backtestFull = it; s.rebuild(clearOrders = false) })
+        v.addView(switchRow("حالت بک‌تست کامل (آخرین کندل هم بسته)", s.backtestFull) { s.backtestFull = it; s.rebuildAsync(clearOrders = false) })
         v.addView(numRow("فاصلهٔ به‌روزرسانی لایو (ثانیه)", s.livePollMs / 1000.0) { s.livePollMs = (it * 1000).toLong().coerceAtLeast(2000) })
         val feedRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        feedRow.addView(Ui.btn(this, "دانلود تاریخچه", Palette.panel2, Palette.txt, 11f).apply { setOnClickListener { s.downloadHistory { m -> toast(m) } } })
-        feedRow.addView(Ui.btn(this, "دادهٔ نمونه", Palette.panel2, Palette.txt, 11f).apply { setOnClickListener { s.loadSample(applicationContext) { m -> toast(m) } } })
+        feedRow.addView(Ui.btn(this, "دانلود تاریخچه", Palette.panel2, Palette.txt, 11f).apply {
+            setOnClickListener {
+                toast("دانلود تاریخچه شروع شد… وضعیت در نوار بالای اپ نمایش داده می‌شود")
+                s.downloadHistory { m -> toast(m) }
+            }
+        })
+        feedRow.addView(Ui.btn(this, "دادهٔ نمونه", Palette.panel2, Palette.txt, 11f).apply {
+            setOnClickListener {
+                toast("در حال بارگذاری دادهٔ نمونه…")
+                s.loadSample(applicationContext) { m -> toast(m) }
+            }
+        })
         feedRow.addView(Ui.btn(this, "ورود CSV", Palette.panel2, Palette.txt, 11f).apply { setOnClickListener { pickCsv() } })
         v.addView(feedRow)
 
@@ -892,7 +903,15 @@ class MainActivity : Activity() {
         v.addView(Ui.section(this, "⑧ ذخیره و بازیابی"))
         v.addView(Ui.tv(this, "فایل خودکار: ${Storage.autoFile(this).absolutePath}", 10f, Palette.dim))
         val saveRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        saveRow.addView(Ui.btn(this, "ذخیرهٔ فوری", Palette.panel2, Palette.txt, 11f).apply { setOnClickListener { toast(s.saveToAutoFile(applicationContext)) } })
+        saveRow.addView(Ui.btn(this, "ذخیرهٔ فوری", Palette.panel2, Palette.txt, 11f).apply {
+            setOnClickListener {
+                toast("در حال ذخیره…")
+                s.io.execute {
+                    val msg = s.saveToAutoFile(applicationContext)
+                    runOnUiThread { toast(msg) }
+                }
+            }
+        })
         saveRow.addView(Ui.btn(this, "ذخیره در فایل…", Palette.panel2, Palette.txt, 11f).apply { setOnClickListener { pickSave() } })
         saveRow.addView(Ui.btn(this, "بازیابی از فایل…", Palette.panel2, Palette.txt, 11f).apply { setOnClickListener { pickLoad() } })
         v.addView(saveRow)
@@ -1219,7 +1238,7 @@ class MainActivity : Activity() {
 
     private fun tradesCsv(): String {
         val sb = StringBuilder("id,dir,entryT,entry,exitT,exit,sl,tpX,qty,pnl,R,reason\n")
-        for (t in s.broker.trades) {
+        for (t in s.tradesSnapshot()) {
             sb.append(t.id).append(',').append(if (t.dir == 1) "BUY" else "SELL").append(',')
                 .append(t.entryT).append(',').append(t.entry).append(',')
                 .append(t.exitT ?: 0).append(',').append(t.exitPx ?: 0.0).append(',')

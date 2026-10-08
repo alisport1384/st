@@ -59,7 +59,7 @@
 
 ## ۶) API عمومی
 ```kotlin
-Log.init(ctx, "1.2")                 // از AppState.initApp
+Log.init(ctx, "1.3")                 // از AppState.initApp
 Log.setEnabled(ctx, true)            // روشن/خاموش (در SharedPreferences: log_enabled)
 Log.setLevel(ctx, Log.INFO)          // سطح
 Log.setWriteToFile(ctx, true)        // نوشتن روی فایل

@@ -112,10 +112,10 @@ git clone https://github.com/alisport1384/st.git buildtest && cd buildtest
 echo "sdk.dir=$ANDROID_HOME" > local.properties
 gradle :engine:test :app:testReleaseUnitTest :app:assembleRelease
 ```
-نتیجهٔ ثبت‌شده: **BUILD SUCCESSFUL** با **۲۸ تست / ۰ خطا** و APK امضاشدهٔ نسخهٔ ۱٫۲ (۱٬۳۹۷٬۱۷۴ بایت)
+نتیجهٔ ثبت‌شده: **BUILD SUCCESSFUL** با **۲۸ تست / ۰ خطا** و APK امضاشدهٔ نسخهٔ ۱٫۳ (حجم نهایی پس از بیلد)
 و همان اثر انگشت گواهی (`b88fc3db…27cba`) ⇒ مخزن عمومی از صفر بیلد می‌شود.
 
 ## ۹) نسخه‌گذاری
-* `versionName` در `app/build.gradle.kts` (نسخهٔ فعلی: **1.2**)
-* `versionCode` عدد صحیح افزایشی (۱٫۰ = 1، ۱٫۱ = 2، ۱٫۲ = 3)
+* `versionName` در `app/build.gradle.kts` (نسخهٔ فعلی: **1.3**)
+* `versionCode` عدد صحیح افزایشی (۱٫۰ = 1، ۱٫۱ = 2، ۱٫۲ = 3، ۱٫۳ = 4)
 * هر نسخه: یک ورودی در `13_CHANGELOG_FA.md` + APK در ریشهٔ پروژهٔ تحویل + باندل ریپو
