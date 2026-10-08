@@ -110,7 +110,9 @@ jobs:
           VERSION="$(sed -n 's/.*versionName *= *"\([^"]*\)".*/\1/p' app/build.gradle.kts | head -1)"
           CODE="$(sed -n 's/.*versionCode *= *\([0-9]*\).*/\1/p' app/build.gradle.kts | head -1)"
           SHORT_SHA="$(echo "$GITHUB_SHA" | cut -c1-7)"
-          NAME="GoldPin-${VERSION}+${CODE}.${SHORT_SHA}.apk"
+          # نکته: «+» در نام asset گیت‌هاب مجاز نیست و به «.» تبدیل می‌شود، پس از «-» استفاده می‌کنیم
+          # تا نام فایل و محتوای .sha256 با هم بخوانند و `sha256sum -c` درست کار کند
+          NAME="GoldPin-${VERSION}-${CODE}.${SHORT_SHA}.apk"
 
           cp app/build/outputs/apk/release/app-release.apk "$NAME"
           sha256sum "$NAME" | tee "${NAME}.sha256"

@@ -79,7 +79,7 @@
 #### ساخت خودکار (CI)
 * `.github/workflows/build.yml` اضافه شد — فایل نصبی بدون نیاز به سیستم محلی ساخته می‌شود:
   * job `apk`: JDK 17 + Android SDK 34 → `:app:assembleRelease` → نام‌گذاری
-    `GoldPin-<نسخه>+<کد>.<sha>.apk` + `sha256` + **تأیید امضا با `apksigner`** (اگر APK
+    `GoldPin-<نسخه>-<کد>.<sha>.apk` + `sha256` + **تأیید امضا با `apksigner`** (اگر APK
     امضا نشده باشد، workflow می‌شکند) → آپلود به‌عنوان Artifact (نگهداری ۹۰ روز).
   * job `test`: `:engine:test` + `:app:testReleaseUnitTest` + اجرای CLI روی دادهٔ نمونهٔ
     ۴۰٬۰۰۰ کندلی + آپلود گزارش تست. عمداً جداست تا خرابی آزمون مانع گرفتن APK نشود.

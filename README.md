@@ -63,6 +63,16 @@
 
 ---
 
+## دانلود مستقیم فایل نصبی (ساده‌ترین راه)
+
+**[GoldPin 1.3.1 — فایل نصبی](https://github.com/alisport1384/st/releases/tag/v1.3.1)**
+
+لینک مستقیم (بدون نیاز به لاگین):
+<https://github.com/alisport1384/st/releases/download/v1.3.1/GoldPin-1.3.1.5.9b1e5af.apk>
+
+صحت فایل: `sha256sum -c GoldPin-1.3.1.5.9b1e5af.apk.sha256`
+⇒ `dbc4bae6d07b19ad80661db66f9ac22b29f3688bce519652d44f74e7ee50575f`
+
 ## گرفتن فایل نصبی از GitHub Actions (بدون سیستم محلی)
 
 فایل نصبی به‌صورت خودکار در Actions ساخته می‌شود —
@@ -70,7 +80,7 @@
 
 1. تب **Actions** ← آخرین اجرای «Build APK» (یا *Run workflow* ← *Run*).
 2. پایین صفحه ← **Artifacts** ← `GoldPin-1.3.1-apk` را دانلود کن.
-3. از zip بیرون بیاور → `GoldPin-1.3.1+5.<sha>.apk` نصب‌شدنی است (امضاشده ، همراه `sha256`).
+3. از zip بیرون بیاور → `GoldPin-1.3.1-5.<sha>.apk` نصب‌شدنی است (امضاشده ، همراه `sha256`).
 
 برای انتشار ماندگار: `git tag v1.3.1 && git push origin v1.3.1` → فایل در **Releases** قرار می‌گیرد.
 هر اجرای CI امضای APK را با `apksigner` تأیید می‌کند و آزمون‌ها را هم اجرا می‌کند
