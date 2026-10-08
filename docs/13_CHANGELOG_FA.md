@@ -76,6 +76,17 @@
 * یک ردیف بد/نقل‌قول‌دار در CSV کل بک‌تست را با `NumberFormatException` می‌کشت
   (`p[0].toLong()`). حالا ردیف‌های نامعتبر شمرده و رد می‌شوند و تعدادشان گزارش می‌شود.
 
+#### ساخت خودکار (CI)
+* `.github/workflows/build.yml` اضافه شد — فایل نصبی بدون نیاز به سیستم محلی ساخته می‌شود:
+  * job `apk`: JDK 17 + Android SDK 34 → `:app:assembleRelease` → نام‌گذاری
+    `GoldPin-<نسخه>+<کد>.<sha>.apk` + `sha256` + **تأیید امضا با `apksigner`** (اگر APK
+    امضا نشده باشد، workflow می‌شکند) → آپلود به‌عنوان Artifact (نگهداری ۹۰ روز).
+  * job `test`: `:engine:test` + `:app:testReleaseUnitTest` + اجرای CLI روی دادهٔ نمونهٔ
+    ۴۰٬۰۰۰ کندلی + آپلود گزارش تست. عمداً جداست تا خرابی آزمون مانع گرفتن APK نشود.
+  * job `release`: با پوش شدن tag مثل `v1.3.1` یک GitHub Release با همان APK می‌سازد.
+  * تریگرها: push به `main` ، Pull Request ، دکمهٔ *Run workflow* (با گزینهٔ اجرای آزمون) ، tag `v*`.
+  * بدون نیاز به Secret (کلید امضا داخل مخزن است). راهنمای کامل در `docs/11_BUILD_RELEASE_FA.md` §۱۰.
+
 #### آزمون‌ها
 * `RegressionTest` (۶ آزمون) اضافه شد؛ هر شش مورد روی کد ۱٫۳ شکست می‌خورند.
 * آزمون `alerts fire…` در `LoggerAlertTest` قطعی شد: `Alerts`/`AppState` سراسری‌اند و

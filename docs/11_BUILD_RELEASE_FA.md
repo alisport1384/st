@@ -103,8 +103,8 @@ git remote set-url origin https://github.com/alisport1384/st.git
 3. `local.properties` ساخته شده و به SDK درست اشاره می‌کند.
 4. `keystore/goldpin.jks` موجود و رمز در `app/build.gradle.kts` هم‌خوان است.
 5. `JAVA_HOME` روی JDK 17 است.
-6. `gradle :engine:test` باید ۸ تست و `gradle :app:testReleaseUnitTest` باید ۲۰ تست را پاس کند
-   (کل: **۲۸ تست / ۰ خطا**؛ جزئیات در سند ۱۲).
+6. `gradle :engine:test` باید ۱۴ تست و `gradle :app:testReleaseUnitTest` باید ۲۳ تست را پاس کند
+   (کل: **۳۷ تست / ۰ خطا**؛ جزئیات در سند ۱۲).
 
 ## ۸) تأیید بیلد از کلون تمیز (آزمایش‌شده)
 ```bash
@@ -112,10 +112,43 @@ git clone https://github.com/alisport1384/st.git buildtest && cd buildtest
 echo "sdk.dir=$ANDROID_HOME" > local.properties
 gradle :engine:test :app:testReleaseUnitTest :app:assembleRelease
 ```
-نتیجهٔ ثبت‌شده: **BUILD SUCCESSFUL** با **۲۸ تست / ۰ خطا** و APK امضاشدهٔ نسخهٔ ۱٫۳ (حجم نهایی پس از بیلد)
-و همان اثر انگشت گواهی (`b88fc3db…27cba`) ⇒ مخزن عمومی از صفر بیلد می‌شود.
+نتیجهٔ ثبت‌شده: **BUILD SUCCESSFUL** با **۳۷ تست / ۰ خطا** و APK امضاشدهٔ نسخهٔ ۱٫۳٫۱
+(`GoldPin-1.3.1+5.<sha>.apk` ، ۱٬۴۰۳٬۵۹۴ بایت) و همان اثر انگشت گواهی (`b88fc3db…27cba`)
+⇒ مخزن عمومی از صفر بیلد می‌شود.
 
 ## ۹) نسخه‌گذاری
-* `versionName` در `app/build.gradle.kts` (نسخهٔ فعلی: **1.3**)
-* `versionCode` عدد صحیح افزایشی (۱٫۰ = 1، ۱٫۱ = 2، ۱٫۲ = 3، ۱٫۳ = 4)
+* `versionName` در `app/build.gradle.kts` (نسخهٔ فعلی: **1.3.1**)
+* `versionCode` عدد صحیح افزایشی (۱٫۰ = 1، ۱٫۱ = 2، ۱٫۲ = 3، ۱٫۳ = 4، ۱٫۳٫۱ = 5)
 * هر نسخه: یک ورودی در `13_CHANGELOG_FA.md` + APK در ریشهٔ پروژهٔ تحویل + باندل ریپو
+
+## ۱۰) ساخت خودکار در GitHub Actions (بدون نیاز به سیستم محلی)
+
+مسیر: [`.github/workflows/build.yml`](../.github/workflows/build.yml) — سه job:
+
+| job | چه می‌کند | کی |
+|---|---|---|
+| `apk` | JDK 17 + Android SDK 34 → `:app:assembleRelease` → تغییر نام به `GoldPin-<نسخه>+<کد>.<sha>.apk` + `sha256` + **تأیید امضا با `apksigner`** → آپلود به‌عنوان Artifact | هر push به `main` ، هر PR ، دکمهٔ *Run workflow* ، هر tag `v*` |
+| `test` | `:engine:test` + `:app:testReleaseUnitTest` + اجرای CLI روی دادهٔ نمونهٔ ۴۰٬۰۰۰ کندلی + آپلود گزارش تست | همراه build (قابل خاموش کردن در *Run workflow*) |
+| `release` | همان APK را به یک **GitHub Release** با یادداشت خودکار پیوست می‌کند | فقط tagهای `v*` |
+
+### گرفتن فایل نصبی
+**راه ساده (Artifact):**
+1. تب **Actions** در گیت‌هاب ← آخرین اجرای «Build APK» (یا دکمهٔ *Run workflow* ← *Run*).
+2. پایین صفحه، بخش **Artifacts** ← `GoldPin-1.3.1-apk` را دانلود کن.
+3. از zip بیرون بیاور؛ فایل `GoldPin-1.3.1+5.xxxxxxx.apk` نصب‌شدنی است.
+
+**راه ماندگار (Release):**
+```bash
+git tag v1.3.1 && git push origin v1.3.1
+```
+بعد از سبز شدن workflow، فایل در **Releases** صفحهٔ مخزن است (Artifact پس از ۹۰ روز پاک
+می‌شود ولی Release می‌ماند).
+
+### نکته‌های مهم
+* **هیچ Secret لازم نیست**: کلید امضا و رمزهایش داخل خود مخزن است (پروژهٔ شخصی).
+  اگر روزی کلید را عوض کردی، `keystore/goldpin.jks` و `signingConfigs` را با هم به‌روز کن.
+* آزمون‌ها عمداً در job جدا هستند تا خرابی آن‌ها مانع گرفتن فایل نصبی نشود؛
+  نتیجه‌شان را در job `test` و Artifact `test-reports` ببین.
+* بیلد محلی و CI هر دو از همان wrapper (`./gradlew` ، Gradle 8.7) استفاده می‌کنند.
+* صحت فایل دانلودی را می‌توانی با فایل `.sha256` کنارش بررسی کنی:
+  `sha256sum -c GoldPin-1.3.1+5.xxxxxxx.apk.sha256`

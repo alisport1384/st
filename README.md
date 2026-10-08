@@ -1,5 +1,7 @@
 # GoldPin · اپلیکیشن استراتژی PinReady روی طلا (XAUUSD)
 
+[![Build APK](https://github.com/alisport1384/st/actions/workflows/build.yml/badge.svg)](https://github.com/alisport1384/st/actions/workflows/build.yml)
+
 **نسخهٔ ۱٫۳٫۱** — چارت TradingView-وار (زوم دو انگشتی + تمام‌صفحه)، لاگر کامل (`md` + `txt`)،
 هشدار «سفارش مسلح شد» و مستندات کامل ساخت از صفر تا صد در پوشهٔ [`docs/`](docs/README_FA.md).
 
@@ -60,6 +62,19 @@
 | همه‌چیز فقط طلا | ✅ نماد پیش‌فرض `GC=F` و استراتژی مخصوص طلا |
 
 ---
+
+## گرفتن فایل نصبی از GitHub Actions (بدون سیستم محلی)
+
+فایل نصبی به‌صورت خودکار در Actions ساخته می‌شود —
+[`.github/workflows/build.yml`](.github/workflows/build.yml):
+
+1. تب **Actions** ← آخرین اجرای «Build APK» (یا *Run workflow* ← *Run*).
+2. پایین صفحه ← **Artifacts** ← `GoldPin-1.3.1-apk` را دانلود کن.
+3. از zip بیرون بیاور → `GoldPin-1.3.1+5.<sha>.apk` نصب‌شدنی است (امضاشده ، همراه `sha256`).
+
+برای انتشار ماندگار: `git tag v1.3.1 && git push origin v1.3.1` → فایل در **Releases** قرار می‌گیرد.
+هر اجرای CI امضای APK را با `apksigner` تأیید می‌کند و آزمون‌ها را هم اجرا می‌کند
+(آزمون‌ها در job جدا هستند تا خرابی‌شان مانع گرفتن فایل نصبی نشود).
 
 ## ساخت (Build)
 
