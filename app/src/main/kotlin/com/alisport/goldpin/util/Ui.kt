@@ -36,6 +36,25 @@ object Palette {
 }
 
 object Fa {
+
+    /**
+     * کوتاه‌سازی رشته برای نمایش در رابط کاربری.
+     *
+     * ⚠ این تابع مستقیماً جلوی فریز اپ را می‌گیرد. پیام `JSONException` کتابخانهٔ
+     * `org.json` **کل مقدار ناموفق** را داخل پیام جاسازی می‌کند؛ برای پاسخ ۵ روزهٔ
+     * یک‌دقیقه‌ای Yahoo یعنی نزدیک یک مگابایت متن. آن رشته به `lastFeedError` و از
+     * آنجا به `headerStatus.text` (یک TextView) و یک Toast می‌رفت و
+     * `LineBreaker.nComputeLineBreaks` باید روی یک مگابایت متن صفحه‌آرایی می‌کرد —
+     * روی گوشی کاربر نخ رابط بیش از ۱۰ ثانیه همان‌جا گیر کرد (ردپای ANR ثابت کرد).
+     * پس هیچ رشتهٔ خطایی بدون کوتاه‌سازی به View نمی‌رسد.
+     */
+    fun short(s: String?, max: Int = 160): String {
+        if (s.isNullOrEmpty()) return ""
+        val oneLine = s.replace('\n', ' ').replace('\r', ' ').trim()
+        return if (oneLine.length <= max) oneLine
+        else oneLine.substring(0, max) + "… (" + oneLine.length + " نویسه)"
+    }
+
     private val digits = charArrayOf('۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹')
 
     /** تبدیل ارقام لاتین به فارسی */

@@ -152,7 +152,7 @@ class AppState {
     /** راه‌اندازی لاگر و هشدارها + وصل کردن آن‌ها به موتور و کارگزار */
     fun initApp(ctx: Context) {
         appCtx = ctx.applicationContext
-        Log.init(appCtx!!, "1.3.4")
+        Log.init(appCtx!!, "1.3.5")
         Alerts.init(appCtx!!)
         val p = appCtx!!.getSharedPreferences("goldpin", Context.MODE_PRIVATE)
         // مهاجرت ۱٫۱ → ۱٫۲: تمام‌صفحهٔ خودکار دیگر پیش‌فرض نیست؛ تنظیم قدیمی true را یک‌بار خاموش کن.
@@ -329,7 +329,7 @@ class AppState {
                 val msg = e.message ?: "خطای نامشخص"
                 Log.e(Log.CAT_FEED, "دانلود تاریخچه ناموفق", e)
                 main.post {
-                    lastFeedError = msg
+                    lastFeedError = com.alisport.goldpin.util.Fa.short(msg, 160)
                     busy = false
                     busyText = ""
                     notifyUi()
@@ -396,7 +396,8 @@ class AppState {
                 Log.w(Log.CAT_LIVE, "به‌روزرسانی زنده ناموفق",
                     "${e.message ?: ""} · پشت‌سرهم=$liveFailStreak")
                 main.post {
-                    lastFeedError = e.message ?: "خطای فید"
+                    lastFeedError = com.alisport.goldpin.util.Fa.short(e.message, 160)
+                        .ifEmpty { "خطای فید" }
                     notifyUi()
                     if (notifyDone) onDone("خطای فید: ${lastFeedError}")
                 }

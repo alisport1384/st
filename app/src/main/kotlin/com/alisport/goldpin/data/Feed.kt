@@ -2,6 +2,7 @@ package com.alisport.goldpin.data
 
 import com.alisport.goldpin.core.Candle
 import com.alisport.goldpin.core.Tf
+import com.alisport.goldpin.util.Fa
 import com.alisport.goldpin.util.Log
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -84,25 +85,42 @@ object Feed {
                 }
                 Log.w(Log.CAT_FEED, "پاسخ Yahoo خالی بود", "host=$h")
             } catch (e: Exception) {
-                Log.w(Log.CAT_FEED, "خطای درخواست Yahoo", "host=$h · ${e.message}")
+                Log.w(Log.CAT_FEED, "خطای درخواست Yahoo",
+                    "host=$h · " + Fa.short(e.message, 200) + " · طول‌پیام=${e.message?.length ?: 0}")
                 lastErr = e
             }
         }
-        throw FeedException("دریافت داده از Yahoo ناموفق بود: ${lastErr?.message ?: "خالی"}")
+        throw FeedException("دریافت داده از Yahoo ناموفق بود: " +
+            Fa.short(lastErr?.message ?: "خالی", 200))
     }
 
-    private fun parseYahoo(body: String): List<Candle> {
+    /**
+     * `internal` (نه `private`) تا آزمون واحد بتواند شکل واقعی پاسخ Yahoo را
+     * بدون شبکه بررسی کند — همان مسیری که باعث فریز اپ شده بود.
+     */
+    internal fun parseYahoo(body: String): List<Candle> {
         val root = JSONObject(body)
-        val chart = root.optJSONObject("chart") ?: throw FeedException("پاسخ نامعتبر")
-        val err = chart.optString("error")
-        if (chart.optString("result", "null") == "null") throw FeedException("نتیجه خالی (${chart.optString("error")})")
-        val res = chart.getJSONArray("result").getJSONObject(0)
-        val ts = res.getJSONArray("timestamp")
-        val q = res.getJSONArray("indicators").getJSONObject(0)
-        val open = q.optJSONArray("quote")?.getJSONObject(0) ?: throw FeedException("بدون کندل")
-        val o = open.optJSONArray("open"); val hi = open.optJSONArray("high")
-        val lo = open.optJSONArray("low"); val cl = open.optJSONArray("close")
-        val vol = open.optJSONArray("volume")
+        val chart = root.optJSONObject("chart") ?: throw FeedException("پاسخ نامعتبر: بدون «chart»")
+        if (chart.optString("result", "null") == "null")
+            throw FeedException("نتیجه خالی (${Fa.short(chart.optString("error"), 120)})")
+        val res = chart.optJSONArray("result")?.optJSONObject(0)
+            ?: throw FeedException("پاسخ بدون «result»")
+        val ts = res.optJSONArray("timestamp")
+            ?: throw FeedException("پاسخ بدون «timestamp»")
+        // ⚠ در پاسخ /v8/finance/chart کلید «indicators» یک **JSONObject** است نه
+        // JSONArray. پیش‌تر `getJSONArray("indicators")` صدا زده می‌شد که همیشه
+        // JSONException می‌داد — یعنی لایو هیچ‌وقت داده نمی‌گرفت و هر ۱۰ ثانیه شکست
+        // می‌خورد. بدتر اینکه آن JSONException کل آبجکت indicators (نزدیک یک مگابایت
+        // برای ۵ روز کندل ۱ دقیقه‌ای) را در پیامش جاسازی می‌کرد و همان رشته نخ رابط
+        // را در صفحه‌آرایی متن قفل می‌کرد.
+        val ind = res.optJSONObject("indicators")
+            ?: res.optJSONArray("indicators")?.optJSONObject(0)
+            ?: throw FeedException("پاسخ بدون «indicators»")
+        val quote = ind.optJSONArray("quote")?.optJSONObject(0)
+            ?: throw FeedException("پاسخ بدون «quote»")
+        val o = quote.optJSONArray("open"); val hi = quote.optJSONArray("high")
+        val lo = quote.optJSONArray("low"); val cl = quote.optJSONArray("close")
+        val vol = quote.optJSONArray("volume")
         val out = ArrayList<Candle>(ts.length())
         var bi = 0
         for (i in 0 until ts.length()) {

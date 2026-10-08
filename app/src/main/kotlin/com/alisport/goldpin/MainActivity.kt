@@ -155,7 +155,12 @@ class MainActivity : Activity() {
         liveBtn.setOnClickListener { toggleLive() }
         titleRow.addView(liveBtn, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         header.addView(titleRow)
-        headerStatus = Ui.tv(this, "آماده", 11f, Palette.dim)
+        headerStatus = Ui.tv(this, "آماده", 11f, Palette.dim).apply {
+            // لایهٔ دفاعی: حتی اگر رشتهٔ بزرگی به اینجا برسد، TextView کل آن را
+            // صفحه‌آرایی نکند (همان کاری که فریز را ساخت).
+            maxLines = 2
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }
         header.addView(headerStatus)
         root.addView(header)
 
@@ -227,7 +232,10 @@ class MainActivity : Activity() {
                 append("  |  موجودی: ${Fa.n(s.broker.equity, 2)}")
                 if (Log.enabled) append("  |  لاگر روشن (${Fa.d(Log.count().toString())})")
                 if (s.busy) append("  |  ⏳ ${s.busyText.ifEmpty { "در حال محاسبه…" }}")
-                s.lastFeedError?.takeIf { it.isNotEmpty() }?.let { append("  |  ⚠ $it") }
+                // ⚠ مهار دوباره: حتی اگر رشتهٔ بلندی تا اینجا رسید، هرگز کامل داخل
+                // TextView نمی‌رود — صفحه‌آرایی متنِ یک مگابایت نخ رابط را قفل می‌کند.
+                s.lastFeedError?.takeIf { it.isNotEmpty() }
+                    ?.let { append("  |  ⚠ " + Fa.short(it, 90)) }
             }
             when (tab) {
                 0 -> refreshChartTab()
@@ -1303,6 +1311,7 @@ class MainActivity : Activity() {
     } catch (e: Exception) { "?" }
 
     private fun toast(msg: String) {
-        android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_LONG).show()
+        // Toast هم یک TextView است؛ رشتهٔ چندصدکیلوبایتی همان‌جا نخ رابط را می‌گیرد.
+        android.widget.Toast.makeText(this, Fa.short(msg, 220), android.widget.Toast.LENGTH_LONG).show()
     }
 }
