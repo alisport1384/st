@@ -110,7 +110,7 @@ object Log {
     private const val MAX_FILE_BYTES = 1_500_000L
 
     val sessionStart: Long = System.currentTimeMillis()
-    var appVersion: String = "1.3.6"
+    var appVersion: String = "1.3.7"
 
     class Entry(val t: Long, val level: Int, val cat: String, val msg: String, val data: String?)
 
@@ -132,7 +132,7 @@ object Log {
     }
 
     // ── راه‌اندازی ────────────────────────────────────────────────────────────
-    fun init(ctx: Context, version: String = "1.3.6") {
+    fun init(ctx: Context, version: String = "1.3.7") {
         appCtx = ctx.applicationContext
         appVersion = version
         cachedLogDir = null

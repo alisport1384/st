@@ -326,18 +326,17 @@ class Engine(val cfg: Settings) {
                         lg("ENGINE", "Ready BU (pinBU) تایید شد", "lo=${f2(pBU.lo)} hi=${f2(pBU.hi)} bar=${sb.bi}")
                         alarm(AlertKind.PIN, "کندل مهم · Ready BU",
                             "کف ${f2(pBU.lo)} — کندل مهم پایین‌ترین‌ها تایید شد (${Tf.label(cfg.tfS)})")
+                        // §۲-۳ (اصلاح‌شده ۱٫۳٫۷): الگوی «دو کف صعودی BU1 < BU2» **حذف شد**.
+                        // دلیل: BU1 فقط یک‌بار و برای همیشه ثبت می‌شد (seqStart هیچ‌وقت به ۰
+                        // برنمی‌گشت) و کل تشخیص روند یک‌بارمصرف می‌شد.
+                        // قاعدهٔ جدید کارفرما: خودِ pinBU پایهٔ روند صعودی است و چرخش روند
+                        // فقط با «کلوز زیر کف نزدیک‌ترین pinBU» رخ می‌دهد (پایین‌تر، بلوک روند).
                         when (trend) {
                             0 -> {
-                                if (seqStart == 0) {
-                                    seqStart = 1; bullBU1Low = pBU.lo
-                                    bullBEHigh = Double.NaN; bullBU2Low = Double.NaN; bullSetup = false
-                                } else if (seqStart == -1) {
-                                    bearBULow = pBU.lo
-                                } else if (seqStart == 1 && !bullBEHigh.isNaN()) {
-                                    if (pBU.lo > bullBU1Low && !bullSetup) {
-                                        bullBU2Low = pBU.lo; bullBU2Bi = sb.bi; bullSetup = true
-                                    }
-                                }
+                                trend = 1; HH = sb.c; HL = pBU.lo
+                                lg("ENGINE", "روند صعودی تثبیت شد", "pinBU=${f2(pBU.lo)} close=${f2(sb.c)}")
+                                alarm(AlertKind.TREND, "روند صعودی شد",
+                                    "pinBU ${f2(pBU.lo)} · کلوز=${f2(sb.c)}")
                             }
                             1 -> HL = pBU.lo
                         }
@@ -357,18 +356,14 @@ class Engine(val cfg: Settings) {
                         lg("ENGINE", "Ready BE (pinBE) تایید شد", "hi=${f2(pBE.hi)} lo=${f2(pBE.lo)} bar=${sb.bi}")
                         alarm(AlertKind.PIN, "کندل مهم · Ready BE",
                             "سقف ${f2(pBE.hi)} — کندل مهم بالاترین‌ها تایید شد (${Tf.label(cfg.tfS)})")
+                        // §۲-۳ (اصلاح‌شده ۱٫۳٫۷): قرینهٔ سمت نزولی — خودِ pinBE پایهٔ روند
+                        // نزولی است و چرخش فقط با «کلوز بالای سقف نزدیک‌ترین pinBE» رخ می‌دهد.
                         when (trend) {
                             0 -> {
-                                if (seqStart == 0) {
-                                    seqStart = -1; bearBE1High = pBE.hi
-                                    bearBULow = Double.NaN; bearBE2High = Double.NaN; bearSetup = false
-                                } else if (seqStart == 1) {
-                                    if (bullBEHigh.isNaN()) bullBEHigh = pBE.hi
-                                } else if (seqStart == -1 && !bearBULow.isNaN()) {
-                                    if (pBE.hi < bearBE1High && !bearSetup) {
-                                        bearBE2High = pBE.hi; bearBE2Bi = sb.bi; bearSetup = true
-                                    }
-                                }
+                                trend = -1; LL = sb.c; LH = pBE.hi
+                                lg("ENGINE", "روند نزولی تثبیت شد", "pinBE=${f2(pBE.hi)} close=${f2(sb.c)}")
+                                alarm(AlertKind.TREND, "روند نزولی شد",
+                                    "pinBE ${f2(pBE.hi)} · کلوز=${f2(sb.c)}")
                             }
                             -1 -> LH = pBE.hi
                         }
@@ -383,38 +378,34 @@ class Engine(val cfg: Settings) {
         var evTrendUp = false; var evTrendDn = false
         var evChgUp = false; var evChgDn = false
         when (trend) {
-            0 -> {
-                if (bullSetup && !bullBEHigh.isNaN() && sb.c > bullBEHigh && sb.bi > bullBU2Bi) {
-                    trend = 1; HH = bullBEHigh; HL = bullBU2Low
-                    bullSetup = false; bearSetup = false; evTrendUp = true
-                    lg("ENGINE", "روند صعودی تثبیت شد", "HH=${f2(HH)} HL=${f2(HL)} close=${f2(sb.c)}")
-                    alarm(AlertKind.TREND, "روند صعودی شد",
-                        "HH=${f2(HH)} · HL=${f2(HL)} · کلوز=${f2(sb.c)}")
-                } else if (bearSetup && !bearBULow.isNaN() && sb.c < bearBULow && sb.bi > bearBE2Bi) {
-                    trend = -1; LL = bearBULow; LH = bearBE2High
-                    bullSetup = false; bearSetup = false; evTrendDn = true
-                    lg("ENGINE", "روند نزولی تثبیت شد", "LL=${f2(LL)} LH=${f2(LH)} close=${f2(sb.c)}")
-                    alarm(AlertKind.TREND, "روند نزولی شد",
-                        "LL=${f2(LL)} · LH=${f2(LH)} · کلوز=${f2(sb.c)}")
-                }
-            }
+            // روند هنوز تشکیل نشده — با اولین pinBU یا pinBE تشکیل می‌شود (بلوک‌های بالا).
+            0 -> { }
             1 -> {
                 if (sb.c > HH) HH = sb.c
-                else if (sb.c < HL) {
+                // §۲-۳ (اصلاح‌شده ۱٫۳٫۷): در روند صعودی، اگر کندلی **زیر کف نزدیک‌ترین
+                // pinBU** بسته شود، چرخش روند رخ می‌دهد و روند از صعودی به نزولی تبدیل می‌شود.
+                if (!lastBUpin.isNaN() && sb.c < lastBUpin) {
                     trend = -1; LL = sb.c; LH = HH; evChgDn = true
-                    lg("ENGINE", "روند به نزولی برگشت", "LL=${f2(LL)} LH=${f2(LH)} close=${f2(sb.c)}")
-                    alarm(AlertKind.TREND, "تغییر روند به نزولی", "LL=${f2(LL)} · LH=${f2(LH)} · کلوز=${f2(sb.c)}")
+                    lg("ENGINE", "چرخش روند به نزولی (کلوز زیر pinBU)",
+                        "pinBU=${f2(lastBUpin)} close=${f2(sb.c)}")
+                    alarm(AlertKind.TREND, "چرخش روند به نزولی",
+                        "کلوز ${f2(sb.c)} زیر کف pinBU ${f2(lastBUpin)} بسته شد")
                 }
             }
             -1 -> {
                 if (sb.c < LL) LL = sb.c
-                else if (sb.c > LH) {
+                // §۲-۳ (اصلاح‌شده ۱٫۳٫۷): در روند نزولی، اگر کندلی **بالای سقف نزدیک‌ترین
+                // pinBE** بسته شود، چرخش روند رخ می‌دهد و روند از نزولی به صعودی تغییر می‌کند.
+                if (!lastBEpin.isNaN() && sb.c > lastBEpin) {
                     trend = 1; HH = sb.c; HL = LL; evChgUp = true
-                    lg("ENGINE", "روند به صعودی برگشت", "HH=${f2(HH)} HL=${f2(HL)} close=${f2(sb.c)}")
-                    alarm(AlertKind.TREND, "تغییر روند به صعودی", "HH=${f2(HH)} · HL=${f2(HL)} · کلوز=${f2(sb.c)}")
+                    lg("ENGINE", "چرخش روند به صعودی (کلوز بالای pinBE)",
+                        "pinBE=${f2(lastBEpin)} close=${f2(sb.c)}")
+                    alarm(AlertKind.TREND, "چرخش روند به صعودی",
+                        "کلوز ${f2(sb.c)} بالای سقف pinBE ${f2(lastBEpin)} بسته شد")
                 }
             }
         }
+
         if (evChgDn || evTrendDn) cancelDir(1)
         if (evChgUp || evTrendUp) cancelDir(-1)
 
@@ -782,10 +773,22 @@ class Engine(val cfg: Settings) {
         return false
     }
 
-    private fun pickLow(a: Candle, b: Candle): Triple<Double, Double, Int> =
-        if (a.l < b.l || (a.l == b.l && a.h < b.h)) Triple(a.h, a.l, a.bi) else Triple(b.h, b.l, b.bi)
+    /**
+     * انتخاب کندل مهم در «پایین‌ترین‌ها» — **مطابق §۲-۱ سند استراتژی**.
+     *
+     * سند: «از این دو، کندلی که **کف بزرگ‌تری** دارد مهم است (در تساوی کف، کندلی که
+     * سقف کوچک‌تری دارد).»
+     *
+     * ⚠ پیش‌تر `a.l < b.l` بود یعنی **کم‌ترین** کف انتخاب می‌شد که با قاعدهٔ سند
+     * نمی‌خواند. در ۱٫۳٫۷ به `a.l > b.l` اصلاح شد. شکستن تساوی (سقف کوچک‌تر) بدون
+     * تغییر ماند چون از ابتدا مطابق سند بود.
+     *
+     * `pickHigh` دست نخورد: «سقف بزرگ‌تر» از ابتدا درست پیاده شده بود.
+     */
+    internal fun pickLow(a: Candle, b: Candle): Triple<Double, Double, Int> =
+        if (a.l > b.l || (a.l == b.l && a.h < b.h)) Triple(a.h, a.l, a.bi) else Triple(b.h, b.l, b.bi)
 
-    private fun pickHigh(a: Candle, b: Candle): Triple<Double, Double, Int> =
+    internal fun pickHigh(a: Candle, b: Candle): Triple<Double, Double, Int> =
         if (a.h > b.h || (a.h == b.h && a.l > b.l)) Triple(a.h, a.l, a.bi) else Triple(b.h, b.l, b.bi)
 
     private fun cancelDir(dir: Int) {
