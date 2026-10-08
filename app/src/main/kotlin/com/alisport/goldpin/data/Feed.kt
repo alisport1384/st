@@ -2,6 +2,7 @@ package com.alisport.goldpin.data
 
 import com.alisport.goldpin.core.Candle
 import com.alisport.goldpin.core.Tf
+import com.alisport.goldpin.util.Log
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -58,6 +59,8 @@ object Feed {
      * interval: 1m,5m,15m,30m,1h,1d — range: 1d,5d,7d,1mo,3mo,6mo,1y,2y,max
      */
     fun yahooChart(symbol: String, interval: String, range: String): List<Candle> {
+        val t0 = System.currentTimeMillis()
+        Log.i(Log.CAT_FEED, "درخواست داده از Yahoo", "symbol=$symbol interval=$interval range=$range")
         val hosts = listOf("query1.finance.yahoo.com", "query2.finance.yahoo.com")
         var lastErr: Exception? = null
         for (h in hosts) {
@@ -65,8 +68,14 @@ object Feed {
                 val url = "https://$h/v8/finance/chart/$symbol?interval=$interval&range=$range&includePrePost=false"
                 val body = get(url)
                 val list = parseYahoo(body)
-                if (list.isNotEmpty()) return list
+                if (list.isNotEmpty()) {
+                    Log.i(Log.CAT_FEED, "پاسخ Yahoo دریافت شد",
+                        "host=$h کندل=${list.size} مدت=${System.currentTimeMillis() - t0}ms حجم‌دار=${list.any { it.v > 0 }}")
+                    return list
+                }
+                Log.w(Log.CAT_FEED, "پاسخ Yahoo خالی بود", "host=$h")
             } catch (e: Exception) {
+                Log.w(Log.CAT_FEED, "خطای درخواست Yahoo", "host=$h · ${e.message}")
                 lastErr = e
             }
         }
@@ -119,6 +128,7 @@ object Feed {
             val p = JSONObject(body).optDouble("price", Double.NaN)
             if (p.isNaN()) null else p
         } catch (e: Exception) {
+            Log.d(Log.CAT_FEED, "gold-api پاسخ نداد", e.message ?: "")
             null
         }
     }
@@ -134,6 +144,7 @@ object Feed {
             val ask = p.optDouble("ask", Double.NaN)
             if (bid.isNaN() || ask.isNaN()) null else (bid + ask) / 2.0
         } catch (e: Exception) {
+            Log.d(Log.CAT_FEED, "Swissquote پاسخ نداد", e.message ?: "")
             null
         }
     }
@@ -154,9 +165,10 @@ object Feed {
      * (برای شرایطی که یک سرویس در دسترس نباشد.)
      */
     fun spotPrice(): Pair<Double?, String> {
-        goldApiSpot()?.let { return it to "gold-api" }
-        swissquoteSpot()?.let { return it to "Swissquote" }
-        coinGeckoSpot()?.let { return it to "CoinGecko(PAXG)" }
+        goldApiSpot()?.let { Log.d(Log.CAT_FEED, "قیمت لحظه‌ای از gold-api", com.alisport.goldpin.util.Fa.n(it, 2)); return it to "gold-api" }
+        swissquoteSpot()?.let { Log.d(Log.CAT_FEED, "قیمت لحظه‌ای از Swissquote", com.alisport.goldpin.util.Fa.n(it, 2)); return it to "Swissquote" }
+        coinGeckoSpot()?.let { Log.d(Log.CAT_FEED, "قیمت لحظه‌ای از CoinGecko", com.alisport.goldpin.util.Fa.n(it, 2)); return it to "CoinGecko(PAXG)" }
+        Log.w(Log.CAT_FEED, "هیچ منبع قیمت لحظه‌ای پاسخ نداد")
         return null to "ناموفق"
     }
 
@@ -213,6 +225,8 @@ object Feed {
             }
         }
         if (curBucket != Long.MIN_VALUE) out.add(Candle(out.size, t, o, h, l, c, v))
+        if (src.size != out.size) Log.d(Log.CAT_PERF, "تجمیع کندل‌ها",
+            "ورودی=${src.size} خروجی=${out.size} تایم‌فریم=${Tf.label(targetSec)}")
         return out
     }
 
@@ -220,6 +234,7 @@ object Feed {
     fun synthesizeVolumeIfMissing(candles: List<Candle>): List<Candle> {
         val hasVol = candles.count { it.v > 0.0 } > candles.size / 10
         if (hasVol) return candles
+        Log.w(Log.CAT_FEED, "فید حجم نداشت → ساخت حجم تقریبی از دامنهٔ کندل", "کندل=${candles.size}")
         return candles.map { Candle(it.bi, it.t, it.o, it.h, it.l, it.c, (it.h - it.l) * 10000.0 + 1.0) }
     }
 
@@ -252,7 +267,9 @@ object Feed {
         }
         if (out.isEmpty()) throw FeedException("فایل CSV خوانده نشد (قالب ستون‌ها را بررسی کنید)")
         out.sortBy { it.t }
-        return out.mapIndexed { i, c -> Candle(i, c.t, c.o, c.h, c.l, c.c, c.v) }
+        val res = out.mapIndexed { i, c -> Candle(i, c.t, c.o, c.h, c.l, c.c, c.v) }
+        Log.i(Log.CAT_FEED, "CSV تجزیه شد", "کندل=${res.size} حجم‌دار=${res.any { it.v > 0 }}")
+        return res
     }
 
     /**

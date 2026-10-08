@@ -1,12 +1,15 @@
 package com.alisport.goldpin
 
-import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.content.Context
 import com.alisport.goldpin.core.*
 import com.alisport.goldpin.data.Feed
 import com.alisport.goldpin.data.FeedException
 import com.alisport.goldpin.data.Storage
+import com.alisport.goldpin.util.Alerts
+import com.alisport.goldpin.util.Fa
+import com.alisport.goldpin.util.Log
 import java.io.File
 import java.util.concurrent.Executors
 
@@ -42,6 +45,9 @@ class AppState {
      * (سفارش‌ها اما در همان لحظه با قیمت زنده پر می‌شوند).
      */
     var backtestFull: Boolean = true
+    /** ورود خودکار به تمام‌صفحه در تب چارت */
+    var autoFullscreen: Boolean = true
+    private var appCtx: Context? = null
 
     val io = Executors.newSingleThreadExecutor()
     val main = Handler(Looper.getMainLooper())
@@ -51,6 +57,41 @@ class AppState {
         engine.broker = broker
         broker.engine = engine
         engine.barCommitHook = { cd -> broker.onBar(cd, live = false) }
+        wireLogging()
+    }
+
+    /** راه‌اندازی لاگر و هشدارها + وصل کردن آن‌ها به موتور و کارگزار */
+    fun initApp(ctx: Context) {
+        appCtx = ctx.applicationContext
+        Log.init(appCtx!!, "1.1")
+        Alerts.init(appCtx!!)
+        val p = appCtx!!.getSharedPreferences("goldpin", Context.MODE_PRIVATE)
+        autoFullscreen = p.getBoolean("auto_fullscreen", true)
+        Log.i(Log.CAT_APP, "AppState راه‌اندازی شد",
+            "autoFullscreen=$autoFullscreen logEnabled=${Log.enabled} alerts=${Alerts.enabled}")
+        wireLogging()
+    }
+
+    fun persistPrefs(ctx: Context) {
+        ctx.getSharedPreferences("goldpin", Context.MODE_PRIVATE).edit()
+            .putBoolean("auto_fullscreen", autoFullscreen).apply()
+    }
+
+    /**
+     * لاگر و هشدار را به موتور، کارگزار و همهٔ بخش‌ها وصل می‌کند.
+     * اگر لاگر خاموش باشد، قلاب‌ها null می‌شوند تا هیچ هزینه‌ای تحمیل نشود.
+     */
+    fun wireLogging() {
+        if (Log.enabled) {
+            engine.logSink = { cat, msg, data -> Log.i(cat, msg, data) }
+            broker.logSink = { cat, msg, data -> Log.i(cat, msg, data) }
+        } else {
+            engine.logSink = null
+            broker.logSink = null
+        }
+        val c = appCtx
+        engine.alertSink = { kind, title, body -> Alerts.fire(c, kind, title, body) }
+        broker.alertSink = { kind, title, body -> Alerts.fire(c, kind, title, body) }
     }
 
     fun onChange(f: () -> Unit) { listeners.add(f) }
@@ -65,17 +106,28 @@ class AppState {
     // ── تنظیمات و بازسازی ──────────────────────────────────────────────────────
     /** بعد از تغییر تنظیمات: موتور و کارگزار از صفر روی دادهٔ موجود اجرا می‌شوند. */
     fun rebuild(clearOrders: Boolean = true) {
+        val t0 = System.currentTimeMillis()
+        Log.i(Log.CAT_ENGINE, "شروع اجرای مجدد موتور",
+            "کندل=${candles.size} مود=${cfg.tfMode} چارت=${com.alisport.goldpin.core.Tf.label(chartTfSec)} بک‌تست‌کامل=$backtestFull پاک‌کردن‌سفارش=$clearOrders")
         engine.reset()
         engine.broker = broker
         broker.engine = engine
         if (clearOrders) broker.reset()
         engine.barCommitHook = { cd -> broker.onBar(cd, live = false) }
+        val prev = Alerts.inBacktest
+        Alerts.inBacktest = true
         if (candles.isNotEmpty()) engine.feed(candles, lastIsClosed = backtestFull)
+        Alerts.inBacktest = prev
         engine.broker = broker
+        Log.i(Log.CAT_ENGINE, "اجرای موتور تمام شد",
+            "مدت=${System.currentTimeMillis() - t0}ms پردازش‌شده=${engine.processed} ستاپ=${engine.cnt.setup} برخورد=${engine.cnt.touch} " +
+                "میانی=${engine.cnt.mid} ولوم‌کم=${engine.cnt.lv} ولوم‌زیاد=${engine.cnt.hv} ورود=${engine.cnt.entry} پایان=${engine.cnt.done} " +
+                "باکس=${engine.zones.size} سفارش=${broker.orders.size} معامله=${broker.trades.size} موجودی=${Fa.n(broker.balance, 2)}")
         notifyUi()
     }
 
     fun setMode(modeIdx: Int) {
+        Log.i(Log.CAT_CFG, "تغییر مود تایم‌فریمی", "مود=$modeIdx")
         val m = TF_MODES.firstOrNull { it.idx == modeIdx } ?: TF_MODES[0]
         cfg.tfMode = m.idx
         if (!m.custom) { cfg.tfS = m.s; cfg.tfM = m.m; cfg.tf1 = m.t1; cfg.tf2 = m.t2 }
@@ -89,6 +141,7 @@ class AppState {
     }
 
     fun setCandles(list: List<Candle>, rebuildNow: Boolean = true) {
+        Log.i(Log.CAT_FEED, "داده در اپ گذاشته شد", "کندل=${list.size} بازه=${if (list.size > 1) "٪" else "-"}")
         candles.clear()
         candles.addAll(list)
         if (rebuildNow) rebuild()
@@ -97,6 +150,8 @@ class AppState {
 
     // ── دانلود تاریخچه از فید ───────────────────────────────────────────────────
     fun downloadHistory(onDone: (String) -> Unit = {}) {
+        val t0 = System.currentTimeMillis()
+        Log.i(Log.CAT_FEED, "شروع دانلود تاریخچه", "نماد=$symbol چارت=${com.alisport.goldpin.core.Tf.label(chartTfSec)} عمق=$depth")
         io.execute {
             try {
                 val base = Feed.baseTfFor(chartTfSec)
@@ -110,6 +165,8 @@ class AppState {
                 var chart = if (base == chartTfSec) raw else Feed.aggregate(raw, chartTfSec)
                 if (useSyntheticVolume) chart = Feed.synthesizeVolumeIfMissing(chart)
                 val n = chart.size
+                Log.i(Log.CAT_FEED, "دانلود تاریخچه موفق",
+                    "کندل=$n مدت=${System.currentTimeMillis() - t0}ms پایه=${com.alisport.goldpin.core.Tf.label(base)} بازه=$range")
                 main.post {
                     setCandles(chart)
                     lastFeedAt = System.currentTimeMillis()
@@ -118,6 +175,7 @@ class AppState {
                 }
             } catch (e: Exception) {
                 val msg = e.message ?: "خطای نامشخص"
+                Log.e(Log.CAT_FEED, "دانلود تاریخچه ناموفق", e)
                 main.post {
                     lastFeedError = msg
                     notifyUi()
@@ -129,6 +187,7 @@ class AppState {
 
     /** به‌روزرسانی زنده: فقط دنبالهٔ داده را می‌گیریم و با سری موجود ادغام می‌کنیم. */
     fun updateLiveOnce(notifyDone: Boolean = false, onDone: (String) -> Unit = {}) {
+        val t0 = System.currentTimeMillis()
         io.execute {
             try {
                 val base = Feed.baseTfFor(chartTfSec)
@@ -138,6 +197,8 @@ class AppState {
                 if (useSyntheticVolume) tail = Feed.synthesizeVolumeIfMissing(tail)
                 val (spot, spotSrc) = Feed.spotPrice()
                 val last = tail.lastOrNull()?.c ?: Double.NaN
+                Log.d(Log.CAT_LIVE, "به‌روزرسانی زنده",
+                    "دنباله=${tail.size} قیمت=${if (spot != null) Fa.n(spot, 2) else "-"} منبع=$spotSrc مدت=${System.currentTimeMillis() - t0}ms")
                 main.post {
                     mergeTail(tail)
                     lastLivePrice = if (spot != null && !spot.isNaN()) spot else last
@@ -152,6 +213,7 @@ class AppState {
                     if (notifyDone) onDone("به‌روزرسانی شد · ${com.alisport.goldpin.util.Fa.n(lastLivePrice, 2)}")
                 }
             } catch (e: Exception) {
+                Log.w(Log.CAT_LIVE, "به‌روزرسانی زنده ناموفق", e.message ?: "")
                 main.post {
                     lastFeedError = e.message ?: "خطای فید"
                     notifyUi()
@@ -164,6 +226,7 @@ class AppState {
     /** ادغام دنبالهٔ تازه در سری چارت (بر اساس زمان — بدون تکرار و بدون ریپینت) */
     fun mergeTail(tail: List<Candle>) {
         if (tail.isEmpty()) return
+        val before = candles.size
         if (candles.isEmpty()) { setCandles(tail, rebuildNow = true); return }
         val firstNew = tail.first().t
         // حذف بخش هم‌پوشان از انتهای سری فعلی
@@ -174,11 +237,13 @@ class AppState {
         for (c in tail) merged.add(c)
         candles.clear()
         candles.addAll(merged.mapIndexed { i, c -> Candle(i, c.t, c.o, c.h, c.l, c.c, c.v) })
+        Log.d(Log.CAT_LIVE, "ادغام دنبالهٔ داده", "قبل=$before بعد=${candles.size} جدید=${candles.size - before}")
     }
 
     /** تغییر تایم‌فریم چارت بدون دانلود مجدد (تجمیع داخلی) */
     fun changeChartTf(newTf: Int) {
         if (newTf == chartTfSec) return
+        Log.i(Log.CAT_CFG, "تغییر تایم‌فریم چارت", "${com.alisport.goldpin.core.Tf.label(chartTfSec)} → ${com.alisport.goldpin.core.Tf.label(newTf)}")
         chartTfSec = newTf
         cfg.tf2 = newTf
         io.execute {
@@ -213,11 +278,15 @@ class AppState {
     }
 
     fun saveToAutoFile(ctx: Context): String {
+        val t0 = System.currentTimeMillis()
         return try {
             val json = buildJson()
             Storage.writeText(Storage.autoFile(ctx), json)
+            Log.i(Log.CAT_STORE, "ذخیرهٔ خودکار انجام شد",
+                "بایت=${json.length} کندل=${candles.size} باکس=${engine.zones.size} سفارش=${broker.orders.size} معامله=${broker.trades.size} مدت=${System.currentTimeMillis() - t0}ms")
             "ذخیره شد: ${Storage.autoFile(ctx).absolutePath}"
         } catch (e: Exception) {
+            Log.e(Log.CAT_STORE, "ذخیرهٔ خودکار ناموفق", e)
             "خطای ذخیره: ${e.message}"
         }
     }
@@ -230,6 +299,8 @@ class AppState {
 
     /** بارگذاری کامل — وضعیت دقیقاً همان‌طور که ذخیره شده بود برمی‌گردد. */
     fun loadFromText(json: String): String {
+        val t0 = System.currentTimeMillis()
+        Log.i(Log.CAT_STORE, "شروع بازیابی وضعیت", "بایت=${json.length}")
         return try {
             val ld = Store.load(json)
             copySettings(ld.cfg, cfg)
@@ -248,10 +319,15 @@ class AppState {
             chartTfSec = (m["chartTfSec"] as? Long)?.toInt() ?: cfg.tf2
             depth = (m["depth"] as? Long)?.toInt() ?: depth
             notifyUi()
+            Log.i(Log.CAT_STORE, "بازیابی موفق",
+                "کندل=${candles.size} باکس=${engine.zones.size} (فعال=${engine.zones.count { it.status == ZoneStatus.ACTIVE }} " +
+                    "پاک‌شده=${engine.zones.count { it.status == ZoneStatus.DELETED }} ردشده=${engine.zones.count { it.status == ZoneStatus.REJECTED }}) " +
+                    "سفارش=${broker.orders.size} معامله=${broker.trades.size} موجودی=${Fa.n(broker.balance, 2)} مدت=${System.currentTimeMillis() - t0}ms")
             "بازیابی شد: ${com.alisport.goldpin.util.Fa.d(candles.size.toString())} کندل · " +
                     "${com.alisport.goldpin.util.Fa.d(broker.trades.size.toString())} معامله · " +
                     "${com.alisport.goldpin.util.Fa.d(engine.zones.size.toString())} باکس ناحیه"
         } catch (e: Exception) {
+            Log.e(Log.CAT_STORE, "بازیابی ناموفق", e)
             "خطای بازیابی: ${e.message}"
         }
     }
@@ -324,6 +400,7 @@ class AppState {
 
     /** پاک کردن کامل */
     fun wipe() {
+        Log.w(Log.CAT_APP, "پاک کردن همهٔ داده‌ها و وضعیت")
         candles.clear()
         broker.reset()
         engine.reset()
@@ -340,12 +417,14 @@ class AppState {
                     val text = Feed.readCsvStream(ins)
                     var list = Feed.parseCsv(text)
                     list = Feed.aggregate(list, chartTfSec)
+                    Log.i(Log.CAT_FEED, "دادهٔ نمونهٔ داخلی بارگذاری شد", "کندل=${list.size}")
                     main.post {
                         setCandles(list)
                         onDone("نمونهٔ داخلی بارگذاری شد: ${com.alisport.goldpin.util.Fa.d(list.size.toString())} کندل")
                     }
                 }
             } catch (e: Exception) {
+                Log.e(Log.CAT_FEED, "خطا در دادهٔ نمونه", e)
                 main.post { onDone("خطا در نمونهٔ داخلی: ${e.message}") }
             }
         }
@@ -353,6 +432,7 @@ class AppState {
 
     /** ورود CSV از حافظهٔ دستگاه */
     fun importCsv(ctx: Context, uri: android.net.Uri, baseTfGuess: Int, onDone: (String) -> Unit) {
+        Log.i(Log.CAT_FEED, "ورود CSV", "uri=$uri پایه=${com.alisport.goldpin.core.Tf.label(baseTfGuess)}")
         io.execute {
             try {
                 val text = Storage.readStream(ctx.contentResolver.openInputStream(uri)!!, gz = false)
@@ -365,6 +445,7 @@ class AppState {
                     onDone("وارد شد: ${com.alisport.goldpin.util.Fa.d(list.size.toString())} کندل")
                 }
             } catch (e: Exception) {
+                Log.e(Log.CAT_FEED, "خطای ورود فایل CSV", e)
                 main.post { onDone("خطای ورود فایل: ${e.message}") }
             }
         }
@@ -372,5 +453,8 @@ class AppState {
 
     companion object {
         val instance = AppState()
+
+        /** از MainActivity فراخوانی می‌شود: لاگر + هشدارها را آماده و وصل می‌کند */
+        fun init(ctx: Context) = instance.initApp(ctx)
     }
 }

@@ -8,11 +8,11 @@ import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
+import android.os.SystemClock
 import android.util.AttributeSet
-import android.view.GestureDetector
 import android.view.MotionEvent
-import android.view.ScaleGestureDetector
 import android.view.View
+import android.widget.OverScroller
 import com.alisport.goldpin.core.Candle
 import com.alisport.goldpin.core.Marker
 import com.alisport.goldpin.core.Trade
@@ -24,17 +24,30 @@ import com.alisport.goldpin.util.Ui
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
+import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  چارت کندل — رسم سفارشی با Canvas
-//  • زوم دو‌انگشتی (فشرده/باز کردن کندل‌ها)   • کشیدن افقی و عمودی
-//  • مقیاس قیمت با دو انگشت عمودی            • کراس‌هیر با نگه‌داشتن انگشت
-//  • باکس‌های ناحیه (زنده/پاک‌شده/ردشده) · برچسب‌های استراتژی · خطوط معامله
+//  ChartView — چارت کندل با رفتار «مثل TradingView»
+//
+//  ژست‌ها (مطابق رفتار TradingView موبایل):
+//   • دو انگشت Pinch/Spread → زوم هم‌زمان محور زمان و محور قیمت، با لنگر روی
+//     نقطهٔ انگشتان (کندلِ زیر انگشت ثابت می‌ماند)
+//   • دو انگشت کشیدن (بدون تغییر فاصله) → جابه‌جایی افقی+عمودی
+//   • یک انگشت کشیدن روی چارت → جابه‌جایی (عمودی = مقیاس دستی می‌شود)
+//   • یک انگشت کشیدن روی محور قیمت (راست) → فشرده/باز کردن مقیاس قیمت
+//   • یک انگشت کشیدن روی محور زمان (پایین) → زوم زمان
+//   • دو ضربه: روی چارت = بازنشانی نما ، روی محور قیمت = بازگشت به مقیاس خودکار
+//   • نگه‌داشتن انگشت → کراس‌هیر + منوی زمینه (قابل تنظیم از بیرون)
+//   • پرتاب اینرسی (fling) مثل TradingView
+//
+//  رسم: کندل + حجم در پنل جدا، شبکه، محور قیمت با اعداد گرد، برچسب آخرین قیمت،
+//       لِجند OHLC، واترمارک، باکس‌های ناحیه، برچسب‌های استراتژی و خطوط معامله.
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** سطوح یک ستاپ برای نمایش روی چارت (باکس ولوم کم/زیاد و ناحیهٔ ساختار) */
+/** سطوح یک ستاپ برای نمایش روی چارت */
 class SetupOverlay(
     val id: Long,
     val dir: Int,
@@ -67,230 +80,290 @@ class ChartView @JvmOverloads constructor(
     var trades: List<Trade> = emptyList()
     var pocPrice: Double = Double.NaN
 
+    /** تایم‌فریم چارت (برای برچسب محور زمان و لِجند) */
+    var chartTfSec: Int = 60
+    /** نام نماد برای لِجند */
+    var symbolName: String = "GC=F"
+
     // ── تنظیمات نمایش ──────────────────────────────────────────────────────────
     var showVolume = true
     var showZones = true
     var showMarkers = true
     var showGrid = true
     var showTradeLines = true
+    var showWatermark = true
+    var showLegend = true
+    /** نشانگر به‌روزرسانی زنده */
+    var livePulse = false
+
+    // ── وضعیت نما ──────────────────────────────────────────────────────────────
+    /** فاصلهٔ کندل‌ها بر حسب پیکسل */
+    var barW = 6f
+        private set
+    /** ایندکس کندلِ لبهٔ راست */
+    var rightIdx = 0f
+        private set
+    /** مرکز محور قیمت و بازهٔ آن */
+    var priceCenter = 0.0
+        private set
+    var priceSpan = 1.0
+        private set
+    /** مقیاس خودکار قیمت روشن است؟ */
+    var autoPrice = true
+        private set
+    /** دنبال کردن آخرین کندل */
     var followLive = true
+        private set
+
+    var minBarW = 0.7f
+    var maxBarW = 70f
+
     var onInfo: ((String) -> Unit)? = null
+    var onNeedOlder: (() -> Unit)? = null
+    var onContextMenu: (() -> Unit)? = null
+    var onGesture: ((String) -> Unit)? = null
 
-    // ── نما ────────────────────────────────────────────────────────────────────
-    var barsOnScreen = 140f
-        private set
-    var rightIndex = -1f
-        private set
-    var priceZoom = 1f
-    var priceShift = 0.0
-
-    private var viewLo = 0.0
-    private var viewHi = 1.0
+    // ── ابعاد ──────────────────────────────────────────────────────────────────
     private var chartW = 0
     private var chartH = 0
-    private val axisW: Float get() = Ui.dp(context, 56f).toFloat()
-    private val timeH: Float get() = Ui.dp(context, 18f).toFloat()
+    val axisWdp = 62f
+    val timeHdp = 22f
+    private val axisW get() = Ui.dp(context, axisWdp).toFloat()
+    private val timeH get() = Ui.dp(context, timeHdp).toFloat()
+    private val plotW get() = (chartW - axisW).coerceAtLeast(1f)
 
-    // ── رنگ‌ها ─────────────────────────────────────────────────────────────────
-    private val pUp = Palette.up
-    private val pDown = Palette.down
+    // ── رنگ‌ها (تم تیرهٔ TradingView) ──────────────────────────────────────────
+    private val bg = Color.parseColor("#0E1116")
+    private val gridCol = Color.parseColor("#1B2230")
+    private val axisText = Color.parseColor("#9AA6B8")
+    private val upCol = Color.parseColor("#26A69A")
+    private val dnCol = Color.parseColor("#EF5350")
+    private val crossCol = Color.parseColor("#8FA3BF")
 
     // ── Paint ها ───────────────────────────────────────────────────────────────
-    private val pWick = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = Ui.dp(context, 1f).toFloat() }
+    private val pWick = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = max(1f, Ui.dp(context, 1f).toFloat()) }
     private val pBody = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pVol = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val pGrid = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#1E2530"); strokeWidth = 1f
+    private val pGrid = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = gridCol; strokeWidth = 1f }
+    private val pGridDash = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = gridCol; strokeWidth = 1f; pathEffect = DashPathEffect(floatArrayOf(3f, 5f), 0f)
     }
-    private val pText = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Palette.dim; textSize = Ui.dp(context, 10f).toFloat()
-    }
-    private val pTextSm = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Palette.dim; textSize = Ui.dp(context, 9f).toFloat()
-    }
+    private val pAxis = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#121821") }
+    private val pTxt = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = axisText; textSize = Ui.dp(context, 10.5f).toFloat() }
+    private val pTxtSm = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = axisText; textSize = Ui.dp(context, 9.5f).toFloat() }
+    private val pLegend = Paint(Paint.ANTI_ALIAS_FLAG).apply { textSize = Ui.dp(context, 11f).toFloat(); isFakeBoldText = true }
     private val pZoneFill = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val pZoneLine = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = Ui.dp(context, 1.2f).toFloat() }
+    private val pZoneLine = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE; strokeWidth = max(1f, Ui.dp(context, 1.2f).toFloat())
+    }
     private val pDotted = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeWidth = Ui.dp(context, 1f).toFloat()
-        pathEffect = DashPathEffect(floatArrayOf(6f, 6f), 0f)
+        style = Paint.Style.STROKE; strokeWidth = max(1f, Ui.dp(context, 1f).toFloat())
+        pathEffect = DashPathEffect(floatArrayOf(5f, 5f), 0f)
     }
     private val pDashed = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeWidth = Ui.dp(context, 1f).toFloat()
-        pathEffect = DashPathEffect(floatArrayOf(10f, 6f), 0f)
+        style = Paint.Style.STROKE; strokeWidth = max(1f, Ui.dp(context, 1.1f).toFloat())
+        pathEffect = DashPathEffect(floatArrayOf(11f, 6f), 0f)
     }
     private val pCross = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; strokeWidth = 1f
-        color = Color.parseColor("#8FA3BF")
+        style = Paint.Style.STROKE; strokeWidth = 1f; color = crossCol
         pathEffect = DashPathEffect(floatArrayOf(4f, 4f), 0f)
     }
-    private val pBubble = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#28303E") }
+    private val pBubble = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#2B3546") }
     private val pBubbleTxt = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Palette.txt; textSize = Ui.dp(context, 10.5f).toFloat()
+        color = Color.WHITE; textSize = Ui.dp(context, 10.5f).toFloat()
     }
     private val pLabelBg = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pLabelTxt = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE; textSize = Ui.dp(context, 9f).toFloat()
+        color = Color.WHITE; textSize = Ui.dp(context, 9.5f).toFloat()
     }
     private val pPoc = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Palette.gold; strokeWidth = Ui.dp(context, 1f).toFloat()
+        color = Color.parseColor("#FFC107"); strokeWidth = max(1f, Ui.dp(context, 1f).toFloat())
         pathEffect = DashPathEffect(floatArrayOf(2f, 5f), 0f)
+    }
+    private val pWater = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#15FFFFFF"); textSize = Ui.dp(context, 42f).toFloat(); isFakeBoldText = true
+    }
+    private val pAuto = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#5A6BFF"); textSize = Ui.dp(context, 9f).toFloat()
     }
     private val path = Path()
 
     // ── تعامل ──────────────────────────────────────────────────────────────────
-    private var crossX = -1f
-    private var crossY = -1f
+    private val scroller = OverScroller(context)
+    private var flingVx = 0f
+    private var dragging = false
+    private var lastX = 0f
+    private var lastY = 0f
+    private var axisDrag = false
+    private var timeDrag = false
+    private var manualPriceDrag = false
+    private var multi = false
+    private var downX = 0f
+    private var downY = 0f
+    private var pinchStartDist = 1f
+    private var pinchFocusX = 0f
+    private var pinchFocusY = 0f
+    private var pinchIdx = 0f          // ایندکسِ زیر انگشتان در شروع پینچ
+    private var pinchPrice = 0.0       // قیمتِ زیر انگشتان در شروع پینچ
+
+    // کراس‌هیر
     private var crossOn = false
-    private var lastTouchX = 0f
-    private var lastTouchY = 0f
-    private var pinchPriceMode = false
+    private var crossX = 0f
+    private var crossY = 0f
+    private var hoverIdx = -1
+    private var longPressRunnable: Runnable? = null
 
-    private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
-        override fun onScaleBegin(d: ScaleGestureDetector): Boolean {
-            val dx = abs(d.currentSpan - d.previousSpan)
-            pinchPriceMode = abs(d.focusY - lastTouchY) > dx * 1.2f
-            return true
-        }
-        override fun onScale(d: ScaleGestureDetector): Boolean {
-            if (pinchPriceMode) {
-                priceZoom = (priceZoom * d.scaleFactor).coerceIn(0.05f, 40f)
-                priceShift += (d.focusY - lastTouchY)
-            } else {
-                barsOnScreen = (barsOnScreen / d.scaleFactor).coerceIn(12f, 6000f)
-                followLive = false
-                if (rightIndex < 0 || rightIndex > candles.size + 5) rightIndex = (candles.size - 1).toFloat()
-            }
-            lastTouchY = d.focusY
-            invalidate()
-            return true
-        }
-    })
+    // دو ضربه
+    private var lastTapT = 0L
+    private var lastTapX = 0f
+    private var lastTapY = 0f
 
-    private val gesture = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
-        override fun onDown(e: MotionEvent): Boolean {
-            parent?.requestDisallowInterceptTouchEvent(true)
-            return true
-        }
+    private val slop = Ui.dp(context, 6f).toFloat()
+    private val touchSlop = Ui.dp(context, 10f).toFloat()
 
-        override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
-            if (scaleDetector.isInProgress) return false
-            val cw = chartW - axisW
-            if (cw <= 0) return true
-            val barW = cw / barsOnScreen
-            rightIndex = (rightIndex + dx / barW)
-            val maxIdx = (candles.size - 1).toFloat()
-            if (rightIndex > maxIdx) rightIndex = maxIdx
-            val minIdx = barsOnScreen * 0.15f
-            if (rightIndex < minIdx) rightIndex = minIdx
-            // حرکات عمودی → جابه‌جایی مقیاس قیمت
-            if (abs(dy) > 1f) priceShift += dy.toDouble()
-            if (rightIndex < maxIdx - barsOnScreen) followLive = false
-            invalidate()
-            return true
-        }
+    // ══════════════════════════════════════════════════════════════════════════
+    //  API عمومی (قابل تست)
+    // ══════════════════════════════════════════════════════════════════════════
 
-        override fun onDoubleTap(e: MotionEvent): Boolean {
-            resetView()
-            return true
-        }
+    /** تبدیل ایندکس کندل به مکان افقی */
+    fun xOf(idx: Float): Float = plotW - (rightIdx - idx) * barW
 
-        override fun onLongPress(e: MotionEvent) {
-            crossOn = true
-            crossX = e.x; crossY = e.y
-            invalidate()
-            reportInfo()
-        }
-    })
+    /** ایندکس کندل زیر مکان افقی داده‌شده */
+    fun indexAtX(x: Float): Float = rightIdx - (plotW - x) / barW
 
-    // ── API ───────────────────────────────────────────────────────────────────┬
+    /** تبدیل قیمت به مکان عمودی */
+    fun yOf(price: Double): Float {
+        if (priceSpan <= 0.0) return chartH / 2f
+        val top = priceCenter + priceSpan / 2.0
+        return ((top - price) / priceSpan * (chartH - timeH)).toFloat()
+    }
+
+    /** قیمت زیر مکان عمودی داده‌شده */
+    fun priceAtY(y: Float): Double {
+        val top = priceCenter + priceSpan / 2.0
+        return top - (y / (chartH - timeH).coerceAtLeast(1f)) * priceSpan
+    }
+
+    /**
+     * زوم هم‌زمان زمان و قیمت با لنگر روی نقطهٔ داده‌شده (رفتار پینچ TradingView).
+     * @param factor بزرگ‌تر از ۱ = زوم به داخل (کندل‌ها بازتر)
+     */
+    fun zoomBoth(factor: Float, focusX: Float, focusY: Float) {
+        if (candles.isEmpty() || factor <= 0f) return
+        val fx = focusX.coerceIn(0f, plotW)
+        val fy = focusY.coerceIn(0f, (chartH - timeH).coerceAtLeast(1f))
+        val idxAtFocus = indexAtX(fx)
+        val priceAtFocus = priceAtY(fy)
+
+        // زمان: فاصلهٔ کندل‌ها
+        barW = (barW * factor).coerceIn(minBarW, maxBarW)
+        rightIdx = idxAtFocus + (plotW - fx) / barW
+
+        // قیمت: بازهٔ عمودی (همان ضریب)
+        autoPrice = false
+        val span2 = (priceSpan / factor).coerceIn(0.05, 1e9)
+        priceSpan = span2
+        priceCenter = priceAtFocus - (0.5 - fy / (chartH - timeH).coerceAtLeast(1f)) * span2
+
+        clampRight()
+        invalidate()
+    }
+
+    /** زوم محور زمان با لنگر افقی مشخص */
+    fun zoomTime(factor: Float, focusX: Float) {
+        if (candles.isEmpty() || factor <= 0f) return
+        val fx = focusX.coerceIn(0f, plotW)
+        val idxAtFocus = indexAtX(fx)
+        barW = (barW * factor).coerceIn(minBarW, maxBarW)
+        rightIdx = idxAtFocus + (plotW - fx) / barW
+        clampRight()
+        invalidate()
+    }
+
+    /** جابه‌جایی با پیکسل */
+    fun panPixels(dx: Float, dy: Float) {
+        if (candles.isEmpty()) return
+        rightIdx -= dx / barW
+        if (abs(dy) > touchSlop) {
+            autoPrice = false
+            priceCenter += dy * priceSpan / (chartH - timeH).coerceAtLeast(1f)
+        }
+        clampRight()
+        invalidate()
+    }
+
+    /** بازنشانی کامل نما (دکمهٔ «تنظیم نما») — مثل TradingView */
     fun resetView() {
         followLive = true
-        priceZoom = 1f
-        priceShift = 0.0
-        barsOnScreen = 140f
-        rightIndex = (candles.size - 1).toFloat()
+        autoPrice = true
+        barW = Ui.dp(context, 6f).toFloat()
+        rightIdx = (candles.size - 1).toFloat().coerceAtLeast(0f)
+        applyAutoPrice()
         invalidate()
     }
 
-    fun zoomIn() { barsOnScreen = (barsOnScreen / 1.35f).coerceAtLeast(12f); invalidate() }
-    fun zoomOut() { barsOnScreen = (barsOnScreen * 1.35f).coerceAtMost(6000f); invalidate() }
+    /** فقط بازگشت مقیاس قیمت به حالت خودکار (دو ضربه روی محور قیمت) */
+    fun resetPrice() {
+        autoPrice = true
+        applyAutoPrice()
+        invalidate()
+    }
 
+    /** رفتن به آخرین کندل */
+    fun goLive() {
+        followLive = true
+        rightIdx = (candles.size - 1).toFloat().coerceAtLeast(0f)
+        invalidate()
+    }
+
+    fun zoomIn() {
+        zoomTime(1.35f, plotW / 2f)
+        onGesture?.invoke("زوم به داخل")
+    }
+
+    fun zoomOut() {
+        zoomTime(1f / 1.35f, plotW / 2f)
+        onGesture?.invoke("زوم به بیرون")
+    }
+
+    fun scrollByBars(bars: Float) {
+        followLive = false
+        rightIdx += bars
+        clampRight()
+        invalidate()
+    }
+
+    /** به‌روزرسانی پس از تغییر داده (دنبال لایو بودن حفظ می‌شود) */
     fun refresh() {
-        val maxIdx = (candles.size - 1).toFloat()
-        if (followLive || rightIndex < 0) rightIndex = maxIdx
-        if (rightIndex > maxIdx + 2) rightIndex = maxIdx
+        val maxIdx = (candles.size - 1).toFloat().coerceAtLeast(0f)
+        if (followLive) rightIdx = maxIdx
+        if (rightIdx > maxIdx) rightIdx = maxIdx
+        if (rightIdx < 0f) rightIdx = 0f
+        applyAutoPrice()
         invalidate()
     }
 
-    override fun onTouchEvent(event: MotionEvent): Boolean {
-        scaleDetector.onTouchEvent(event)
-        gesture.onTouchEvent(event)
-        when (event.actionMasked) {
-            MotionEvent.ACTION_DOWN -> {
-                lastTouchX = event.x; lastTouchY = event.y
-                crossOn = false
-            }
-            MotionEvent.ACTION_MOVE -> {
-                lastTouchX = event.x; lastTouchY = event.y
-                if (crossOn) {
-                    crossX = event.x; crossY = event.y
-                    invalidate(); reportInfo()
-                }
-            }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                crossOn = false
-                onInfo?.invoke("")
-                invalidate()
-            }
-            MotionEvent.ACTION_POINTER_UP -> lastTouchY = event.y
-        }
-        return true
+    // ══════════════════════════════════════════════════════════════════════════
+    //  محاسبات
+    // ══════════════════════════════════════════════════════════════════════════
+    private fun clampRight() {
+        val maxIdx = (candles.size - 1).toFloat().coerceAtLeast(0f)
+        if (rightIdx > maxIdx) rightIdx = maxIdx
+        if (rightIdx < 2f) rightIdx = 2f
+        if (rightIdx < maxIdx - 1f) followLive = false
+        if (rightIdx >= maxIdx - 0.5f) followLive = true
+        if (rightIdx <= 2f && onNeedOlder != null) onNeedOlder?.invoke()
     }
 
-    private fun reportInfo() {
-        val (idx, price) = hitTest(crossX, crossY)
-        if (idx < 0 || idx >= candles.size) { onInfo?.invoke(""); return }
-        val c = candles[idx]
-        val o = Fa.n(c.o); val h = Fa.n(c.h); val l = Fa.n(c.l); val cl = Fa.n(c.c)
-        onInfo?.invoke("${Fa.jalali(c.t)}   O:$o  H:$h  L:$l  C:$cl  V:${Fa.vol(c.v)}")
+    private fun visibleRange(): Pair<Int, Int> {
+        if (candles.isEmpty()) return 0 to -1
+        val from = floor(rightIdx - plotW / barW - 1f).toInt().coerceAtLeast(0)
+        val to = ceil(rightIdx + 1f).toInt().coerceAtMost(candles.size - 1)
+        return from to to
     }
 
-    // ── نگاشت ──────────────────────────────────────────────────────────────────
-    private fun idxToX(idx: Float): Float {
-        if (chartW <= 0) return 0f
-        val cw = chartW - axisW
-        val barW = cw / barsOnScreen
-        return cw - (rightIndex - idx + 0.5f) * barW
-    }
-
-    private fun xToIdx(x: Float): Float {
-        val cw = chartW - axisW
-        val barW = cw / barsOnScreen
-        if (barW <= 0f) return -1f
-        return rightIndex - (cw - x) / barW - 0.5f
-    }
-
-    private fun priceToY(p: Double): Float {
-        if (viewHi == viewLo) return chartH / 2f
-        return (chartH * (viewHi - p) / (viewHi - viewLo)).toFloat()
-    }
-
-    private fun yToPrice(y: Float): Double = viewHi - (y / chartH.toDouble()) * (viewHi - viewLo)
-
-    private fun hitTest(x: Float, y: Float): Pair<Int, Double> {
-        val idx = Math.round(xToIdx(x))
-        return idx to yToPrice(y)
-    }
-
-    // ── اندازه‌گیری ───────────────────────────────────────────────────────────
-    override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
-        chartW = w; chartH = h
-        super.onSizeChanged(w, h, ow, oh)
-    }
-
-    private fun computeView() {
-        val from = max(0, floor(rightIndex - barsOnScreen).toInt())
-        val to = min(candles.size - 1, ceil(rightIndex + 1).toInt())
+    private fun loHiVisible(): Pair<Double, Double> {
+        val (from, to) = visibleRange()
         var lo = Double.MAX_VALUE
         var hi = -Double.MAX_VALUE
         if (from <= to) {
@@ -299,216 +372,518 @@ class ChartView @JvmOverloads constructor(
                 if (c.l < lo) lo = c.l
                 if (c.h > hi) hi = c.h
             }
-        } else { lo = 0.0; hi = 1.0 }
+        }
         if (lo == Double.MAX_VALUE) { lo = 0.0; hi = 1.0 }
-        // باکس‌ها و سطوح داخل نما را هم در نظر بگیر
         for (z in zones) {
-            if (z.createdBi in from..to || z.endBi in from..to) {
-                lo = min(lo, z.bot); hi = max(hi, z.top)
+            if (z.status == ZoneStatus.CAP) continue
+            if ((z.createdBi in from..to) || (z.endBi in from..to)) {
+                if (z.bot < lo) lo = z.bot
+                if (z.top > hi) hi = z.top
             }
         }
-        for (o in overlays) {
-            val arr = doubleArrayOf(o.zTop, o.zBot, o.lvH, o.lvL, o.hvH, o.hvL, o.entry, o.sl, o.tp1, o.tp2, o.tpx, o.midRef)
+        if (showTradeLines) for (o in overlays) {
+            val arr = doubleArrayOf(o.zTop, o.zBot, o.lvH, o.lvL, o.hvH, o.hvL, o.entry, o.sl, o.tp1, o.tp2, o.tpx)
             for (v in arr) if (!v.isNaN()) { if (v < lo) lo = v; if (v > hi) hi = v }
         }
-        val pad = (hi - lo) * 0.06
-        var vLo = lo - pad
-        var vHi = hi + pad
-        if (vHi - vLo < 1e-9) { vLo -= 1.0; vHi += 1.0 }
-        val center = (vLo + vHi) / 2.0
-        val half = (vHi - vLo) / 2.0 / priceZoom
-        val ppu = (chartH - timeH).coerceAtLeast(1f) / (half * 2).toFloat()   // پیکسل بر واحد قیمت
-        val shiftPrice = priceShift / ppu
-        viewLo = center - half + shiftPrice
-        viewHi = center + half + shiftPrice
+        return lo to hi
     }
 
-    // ── رسم ────────────────────────────────────────────────────────────────────
+    /** مقیاس خودکار: بازهٔ دیدنی‌ها + حاشیهٔ ۸٪ */
+    private fun applyAutoPrice() {
+        if (!autoPrice || chartH == 0) return
+        val (lo, hi) = loHiVisible()
+        if (hi <= lo) return
+        val pad = (hi - lo) * 0.08
+        val center = (hi + lo) / 2.0
+        priceCenter = center
+        priceSpan = (hi - lo) + 2 * pad
+    }
+
+    /** گام گرد برای اعداد محور قیمت */
+    private fun niceStep(raw: Double): Double {
+        if (raw <= 0) return 1.0
+        val exp = floor(log10(raw))
+        val base = 10.0.pow(exp)
+        val f = raw / base
+        val mult = when {
+            f <= 1 -> 1.0; f <= 2 -> 2.0; f <= 2.5 -> 2.5; f <= 5 -> 5.0; else -> 10.0
+        }
+        return mult * base
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  لمس
+    // ══════════════════════════════════════════════════════════════════════════
+    override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+        chartW = w; chartH = h
+        resetView()
+        super.onSizeChanged(w, h, ow, oh)
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        val action = event.actionMasked
+        when (action) {
+            MotionEvent.ACTION_DOWN -> {
+                parent?.requestDisallowInterceptTouchEvent(true)
+                scroller.forceFinished(true)
+                dragging = true
+                multi = false
+                downX = event.x; downY = event.y
+                lastX = event.x; lastY = event.y
+                axisDrag = event.x >= plotW
+                timeDrag = event.y >= chartH - timeH
+                crossOn = false
+                scheduleLongPress(event.x, event.y)
+            }
+
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                cancelPendingLongPress()
+                multi = true
+                crossOn = false
+                pinchStartDist = spacing(event).coerceAtLeast(1f)
+                pinchFocusX = focusX(event)
+                pinchFocusY = focusY(event)
+                pinchIdx = indexAtX(pinchFocusX)
+                pinchPrice = priceAtY(pinchFocusY)
+                barWAtPinchStart = barW
+                pinchSpanStart = priceSpan
+                lastX = pinchFocusX; lastY = pinchFocusY
+            }
+
+            MotionEvent.ACTION_MOVE -> {
+                if (event.pointerCount >= 2) {
+                    cancelPendingLongPress()
+                    val dist = spacing(event)
+                    val fx = focusX(event)
+                    val fy = focusY(event)
+                    // ① پینچ: زوم هم‌زمان دو محور با لنگر روی انگشتان
+                    if (pinchStartDist > 0f) {
+                        val f = dist / pinchStartDist
+                        if (abs(f - 1f) > 0.002f) {
+                            barW = (barWAtPinchStart * f).coerceIn(minBarW, maxBarW)
+                            autoPrice = false
+                            priceSpan = (pinchSpanStart / f).coerceIn(0.05, 1e9)
+                        }
+                    }
+                    // ② جابه‌جایی دو انگشتی: انگشتانِ جابه‌جاشده لنگر را می‌کشند
+                    val idxUnder = pinchIdx - (fx - pinchFocusX) / barWAtPinchStart
+                    rightIdx = idxUnder + (plotW - fx) / barW
+                    val pxUnder = pinchPrice + (fy - pinchFocusY) / (chartH - timeH).coerceAtLeast(1f) * pinchSpanStart
+                    priceCenter = pxUnder - (0.5 - fy / (chartH - timeH).coerceAtLeast(1f)) * priceSpan
+                    clampRight()
+                    invalidate()
+                } else {
+                    val dx = event.x - lastX
+                    val dy = event.y - lastY
+                    if (!crossOn && (abs(event.x - downX) > slop || abs(event.y - downY) > slop)) cancelLongPress()
+                    when {
+                        crossOn -> {           // کراس‌هیر را بکش
+                            crossX = event.x.coerceIn(0f, plotW - 1f)
+                            crossY = event.y.coerceIn(0f, chartH - timeH - 1f)
+                            updateHover()
+                            invalidate()
+                        }
+                        axisDrag || event.x >= plotW -> {   // کشیدن روی محور قیمت
+                            manualPriceDrag = true
+                            autoPrice = false
+                            val f = 1.0 + (dy / (chartH - timeH).coerceAtLeast(1f)) * 1.6
+                            priceSpan = (priceSpan * f).coerceIn(0.05, 1e9)
+                            invalidate()
+                        }
+                        timeDrag || event.y >= chartH - timeH -> {   // کشیدن روی محور زمان
+                            zoomTime(1f + (dx / plotW) * 1.4f, plotW)
+                        }
+                        else -> {
+                            panPixels(dx, dy)
+                            flingVx = dx
+                        }
+                    }
+                    lastX = event.x; lastY = event.y
+                }
+            }
+
+            MotionEvent.ACTION_POINTER_UP -> {
+                // از حالت دو انگشتی به یک انگشتی: مقادیر مرجع را به‌روز کن
+                val remaining = if (event.actionIndex == 0) 1 else 0
+                lastX = event.getX(remaining); lastY = event.getY(remaining)
+                pinchStartDist = 0f
+            }
+
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                cancelPendingLongPress()
+                dragging = false
+                if (crossOn) {
+                    crossOn = false
+                    updateHover()
+                    onInfo?.invoke("")
+                    invalidate()
+                    return true
+                }
+                if (manualPriceDrag) { manualPriceDrag = false }
+                // تشخیص دو ضربه
+                val now = SystemClock.uptimeMillis()
+                val isTap = abs(event.x - downX) < touchSlop && abs(event.y - downY) < touchSlop
+                if (isTap) {
+                    if (now - lastTapT < 320 && kotlin.math.hypot((event.x - lastTapX).toDouble(), (event.y - lastTapY).toDouble()) < Ui.dp(context, 40f)) {
+                        // دو ضربه
+                        if (event.x >= plotW) {
+                            resetPrice()
+                            onGesture?.invoke("مقیاس قیمت خودکار شد")
+                        } else {
+                            resetView()
+                            onGesture?.invoke("نما بازنشانی شد")
+                        }
+                        lastTapT = 0L
+                        return true
+                    }
+                    lastTapT = now; lastTapX = event.x; lastTapY = event.y
+                    hoverIdx = Math.round(indexAtX(event.x)).coerceIn(0, max(0, candles.size - 1))
+                    crossOn = true
+                    crossX = event.x; crossY = event.y
+                    updateHover(); invalidate()
+                    return true
+                }
+                // پرتاب اینرسی
+                if (!multi && abs(flingVx) > Ui.dp(context, 2f)) {
+                    scroller.fling(
+                        (rightIdx * 1000).toInt(), 0,
+                        (-flingVx * 1000 / barW).toInt(), 0,
+                        Int.MIN_VALUE, Int.MAX_VALUE, 0, 0
+                    )
+                    postInvalidateOnAnimation()
+                    onGesture?.invoke("پرتاب")
+                }
+                flingVx = 0f
+                if (multi) { /* زوم دو انگشتی تمام شد */ }
+                multi = false
+            }
+        }
+        return true
+    }
+
+    private var barWAtPinchStart = 6f
+    private var pinchSpanStart = 1.0
+
+    private fun spacing(e: MotionEvent): Float {
+        if (e.pointerCount < 2) return 1f
+        return kotlin.math.hypot((e.getX(0) - e.getX(1)).toDouble(), (e.getY(0) - e.getY(1)).toDouble()).toFloat()
+    }
+
+    private fun focusX(e: MotionEvent): Float {
+        if (e.pointerCount < 2) return e.x
+        return (e.getX(0) + e.getX(1)) / 2f
+    }
+
+    private fun focusY(e: MotionEvent): Float {
+        if (e.pointerCount < 2) return e.y
+        return (e.getY(0) + e.getY(1)) / 2f
+    }
+
+    private fun scheduleLongPress(x: Float, y: Float) {
+        cancelPendingLongPress()
+        val r = Runnable {
+            crossOn = true
+            crossX = x.coerceIn(0f, plotW - 1f)
+            crossY = y.coerceIn(0f, chartH - timeH - 1f)
+            updateHover()
+            invalidate()
+            onContextMenu?.invoke()
+        }
+        longPressRunnable = r
+        postDelayed(r, 420)
+    }
+
+    private fun cancelPendingLongPress() {
+        longPressRunnable?.let { removeCallbacks(it) }
+        longPressRunnable = null
+    }
+
+    private fun updateHover() {
+        val i = Math.round(indexAtX(crossX))
+        hoverIdx = if (i in candles.indices) i else -1
+        if (hoverIdx >= 0) {
+            val c = candles[hoverIdx]
+            onInfo?.invoke(
+                "${Fa.jalali(c.t)}   O ${Fa.n(c.o)}   H ${Fa.n(c.h)}   L ${Fa.n(c.l)}   C ${Fa.n(c.c)}   V ${Fa.vol(c.v)}"
+            )
+        }
+    }
+
+    /** چرخهٔ اینرسی (چون در View معمولی Choreographer در دسترس نیست) */
+    override fun computeScroll() {
+        if (scroller.computeScrollOffset()) {
+            rightIdx = scroller.currX / 1000f
+            clampRight()
+            postInvalidateOnAnimation()
+        }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  رسم
+    // ══════════════════════════════════════════════════════════════════════════
     @SuppressLint("DrawAllocation")
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        canvas.drawColor(Palette.bg)
+        canvas.drawColor(bg)
         if (chartW == 0 || chartH == 0) return
         if (candles.isEmpty()) {
-            canvas.drawText("داده‌ای نیست — از تب تنظیمات تاریخچه را دانلود کنید", Ui.dp(context, 16f).toFloat(),
-                    chartH / 2f, pText.apply { textSize = Ui.dp(context, 12f).toFloat() })
+            pTxt.textSize = Ui.dp(context, 12.5f).toFloat()
+            pTxt.color = axisText
+            canvas.drawText("داده‌ای نیست — تب تنظیمات ← دانلود تاریخچه", Ui.dp(context, 14f).toFloat(),
+                chartH / 2f, pTxt)
+            pTxt.textSize = Ui.dp(context, 10.5f).toFloat()
             return
         }
-        computeView()
-        val cw = chartW - axisW
-        val volH = if (showVolume) (chartH - timeH) * 0.20f else 0f
-        val priceH = chartH - timeH - volH - 2f
-        val barW = cw / barsOnScreen
+        val h = chartH - timeH
+        val volH = if (showVolume) h * 0.18f else 0f
+        val priceH = h - volH
 
-        val from = max(0, floor(rightIndex - barsOnScreen).toInt())
-        val to = min(candles.size - 1, ceil(rightIndex + 1).toInt())
+        // ── واترمارک ──
+        if (showWatermark) {
+            canvas.save()
+            canvas.rotate(-6f, chartW / 2f, chartH / 3f)
+            canvas.drawText("GoldPin · XAUUSD", Ui.dp(context, 18f).toFloat(), chartH / 3f, pWater)
+            canvas.restore()
+        }
+
+        val (from, to) = visibleRange()
 
         // ── شبکه و محور قیمت ──
         if (showGrid) {
-            val steps = 6
-            for (k in 0..steps) {
-                val p = viewLo + (viewHi - viewLo) * k / steps
-                val y = priceToY(p)
-                if (y > priceH) continue
-                canvas.drawLine(0f, y, cw, y, pGrid)
-                canvas.drawText(Fa.n(p), cw + Ui.dp(context, 4f), y + Ui.dp(context, 3.5f), pText)
+            val step = niceStep(priceSpan / 6.0)
+            var p = floor((priceCenter - priceSpan / 2) / step) * step
+            while (p <= priceCenter + priceSpan / 2) {
+                val y = yOf(p)
+                if (y in 0f..priceH) {
+                    canvas.drawLine(0f, y, plotW, y, pGrid)
+                    val lbl = fmtPrice(p)
+                    canvas.drawText(lbl, plotW + Ui.dp(context, 5f), y + Ui.dp(context, 3.4f), pTxt)
+                }
+                p += step
             }
         }
+        // محور قیمت (پس‌زمینه)
+        canvas.drawRect(plotW, 0f, chartW.toFloat(), chartH.toFloat(), pAxis)
 
-        // ── باکس‌های ناحیه ──
-        if (showZones) drawZones(canvas, from, to, barW, priceH)
-
-        // ── POC ──
-        if (!pocPrice.isNaN()) {
-            val y = priceToY(pocPrice)
-            canvas.drawLine(0f, y, cw, y, pPoc)
-            canvas.drawText("POC " + Fa.n(pocPrice), Ui.dp(context, 3f).toFloat(), y - Ui.dp(context, 2f).toFloat(), pTextSm)
-        }
-
-        // ── حجم ──
-        if (showVolume) {
+        // ── پنل حجم ──
+        if (showVolume && volH > 0) {
             var maxV = 0.0
             for (i in from..to) if (candles[i].v > maxV) maxV = candles[i].v
             if (maxV > 0) {
-                val base = chartH - timeH
+                val base = priceH + volH
                 for (i in from..to) {
                     val c = candles[i]
-                    val x = idxToX(i.toFloat())
-                    if (x < -barW || x > cw + barW) continue
-                    val h = (c.v / maxV * volH).toFloat()
-                    pVol.color = (if (c.c >= c.o) pUp else pDown) and 0x66FFFFFF
-                    canvas.drawRect(x - barW * 0.35f, base - h, x + barW * 0.35f, base, pVol)
+                    val x = xOf(i.toFloat())
+                    if (x < -barW || x > plotW + barW) continue
+                    val bh = (c.v / maxV * volH).toFloat()
+                    pVol.color = (if (c.c >= c.o) upCol else dnCol) and 0x66FFFFFF
+                    val w = max(barW * 0.7f, 1f)
+                    canvas.drawRect(x - w / 2f, base - bh, x + w / 2f, base, pVol)
                 }
-                canvas.drawLine(0f, chartH - timeH - volH, cw, chartH - timeH - volH, pGrid)
+            }
+            canvas.drawLine(0f, priceH, plotW, priceH, pGrid)
+        }
+
+        // ── باکس‌های ناحیه ──
+        if (showZones) drawZones(canvas, from, to, priceH)
+
+        // ── POC ──
+        if (!pocPrice.isNaN()) {
+            val y = yOf(pocPrice)
+            if (y in 0f..priceH) {
+                canvas.drawLine(0f, y, plotW, y, pPoc)
+                canvas.drawText("POC " + fmtPrice(pocPrice), Ui.dp(context, 3f).toFloat(), y - Ui.dp(context, 2.5f).toFloat(), pTxtSm)
             }
         }
 
         // ── کندل‌ها ──
+        val bodyW = max(barW * 0.72f, 1f)
         for (i in from..to) {
             val c = candles[i]
-            val x = idxToX(i.toFloat())
-            if (x < -barW || x > cw + barW) continue
+            val x = xOf(i.toFloat())
+            if (x < -barW || x > plotW + barW) continue
             val up = c.c >= c.o
-            val col = if (up) pUp else pDown
+            val col = if (up) upCol else dnCol
             pWick.color = col
-            canvas.drawLine(x, priceToY(c.h), x, priceToY(c.l), pWick)
-            val y1 = priceToY(max(c.o, c.c))
-            val y2 = priceToY(min(c.o, c.c))
+            canvas.drawLine(x, yOf(c.h), x, yOf(c.l), pWick)
+            val y1 = yOf(max(c.o, c.c))
+            val y2 = yOf(min(c.o, c.c))
             pBody.color = col
-            val bw = max(barW * 0.7f, 1f)
-            canvas.drawRect(x - bw / 2f, y1, x + bw / 2f, max(y2, y1 + 1f), pBody)
+            canvas.drawRect(x - bodyW / 2f, y1, x + bodyW / 2f, max(y2, y1 + 1f), pBody)
         }
 
-        // ── خطوط معاملات ──
-        if (showTradeLines) drawTradeLines(canvas, cw, priceH)
+        // ── خطوط معامله ──
+        if (showTradeLines) drawTradeLines(canvas, priceH)
 
         // ── برچسب‌های استراتژی ──
-        if (showMarkers) drawMarkers(canvas, from, to, cw, priceH)
+        if (showMarkers) drawMarkers(canvas, from, to, priceH)
 
         // ── محور زمان ──
-        val step = max(1, (barsOnScreen / 6f).toInt())
-        var i = from
+        canvas.drawRect(0f, h, chartW.toFloat(), chartH.toFloat(), pAxis)
+        val stride = timeStride()
+        var i = from - (from % stride)
         while (i <= to) {
-            val x = idxToX(i.toFloat())
-            canvas.drawLine(x, 0f, x, chartH - timeH, pGrid)
-            val label = timeLabel(candles[i].t, chartTfSeconds())
-            canvas.drawText(label, x - Ui.dp(context, 14f).toFloat(), chartH - Ui.dp(context, 4f).toFloat(), pTextSm)
-            i += step
+            if (i >= 0) {
+                val x = xOf(i.toFloat())
+                if (x in 0f..plotW) {
+                    canvas.drawLine(x, 0f, x, h, pGridDash)
+                    val lbl = timeLabel(candles[i].t)
+                    val tw = pTxtSm.measureText(lbl)
+                    canvas.drawText(lbl, (x - tw / 2).coerceIn(2f, plotW - tw - 2f), chartH - Ui.dp(context, 5f).toFloat(), pTxtSm)
+                }
+            }
+            i += stride
         }
 
+        // ── برچسب آخرین قیمت ──
+        val last = candles.last()
+        val lastY = yOf(last.c)
+        if (lastY in 0f..priceH) {
+            val up = last.c >= last.o
+            pDashed.color = if (up) upCol else dnCol
+            canvas.drawLine(0f, lastY, plotW, lastY, pDashed)
+            val txt = fmtPrice(last.c)
+            pLabelBg.color = (if (up) upCol else dnCol) and 0x00FFFFFF or 0xFF000000.toInt()
+            val tw = pLabelTxt.measureText(txt) + Ui.dp(context, 8f)
+            canvas.drawRoundRect(RectF(plotW + 1f, lastY - Ui.dp(context, 8f), plotW + tw, lastY + Ui.dp(context, 8f)),
+                Ui.dp(context, 2f).toFloat(), Ui.dp(context, 2f).toFloat(), pLabelBg)
+            canvas.drawText(txt, plotW + Ui.dp(context, 4f), lastY + Ui.dp(context, 3.5f), pLabelTxt)
+        }
+
+        // ── نشانگر مقیاس خودکار ──
+        if (autoPrice) {
+            canvas.drawText("خودکار", plotW + Ui.dp(context, 4f), Ui.dp(context, 12f).toFloat(), pAuto)
+        }
+
+        // ── لِجند بالا-چپ ──
+        if (showLegend) drawLegend(canvas)
+
         // ── کراس‌هیر ──
-        if (crossOn && crossX < cw) {
-            canvas.drawLine(crossX, 0f, crossX, chartH - timeH, pCross)
-            canvas.drawLine(0f, crossY, cw, crossY, pCross)
-            val price = yToPrice(crossY)
-            bubble(canvas, cw + 1f, crossY - Ui.dp(context, 9f), axisW - 2f, Fa.n(price))
-            val idx = Math.round(xToIdx(crossX))
-            if (idx in candles.indices) {
-                val tx = min(crossX - Ui.dp(context, 28f), cw - Ui.dp(context, 60f))
-                bubble(canvas, max(0f, tx), chartH - timeH + 1f, Ui.dp(context, 96f).toFloat(), Fa.jalali(candles[idx].t))
+        if (crossOn && crossX < plotW) {
+            canvas.drawLine(crossX, 0f, crossX, h, pCross)
+            canvas.drawLine(0f, crossY, plotW, crossY, pCross)
+            bubble(canvas, plotW + 1f, crossY - Ui.dp(context, 9f), axisW - 2f, fmtPrice(priceAtY(crossY)))
+            if (hoverIdx in candles.indices) {
+                val t = timeLabelFull(candles[hoverIdx].t)
+                val w = pBubbleTxt.measureText(t) + Ui.dp(context, 10f)
+                bubble(canvas, (crossX - w / 2).coerceIn(0f, plotW - w), h + 1f, w, t)
             }
+        }
+
+        // ── نشانگر لایو ──
+        if (livePulse && followLive) {
+            val r = Ui.dp(context, 3f).toFloat()
+            canvas.drawCircle(plotW - r * 3, Ui.dp(context, 10f).toFloat(), r, pBody.apply { color = upCol })
         }
     }
 
-    private fun chartTfSeconds(): Int = chartTfSec
+    private fun fmtPrice(p: Double): String = when {
+        p >= 1000 -> String.format("%,.2f", p)
+        p >= 10 -> String.format("%.5f", p)
+        else -> String.format("%.2f", p)
+    }
 
-    /** تایم‌فریم جاری چارت برای برچسب محور زمان (توسط اکتیویتی ست می‌شود) */
-    var chartTfSec: Int = 60
+    private fun timeStride(): Int {
+        val bars = (plotW / barW).coerceAtLeast(1f)
+        val want = max(2, (bars / 6f).toInt())
+        val all = listOf(1, 2, 3, 5, 10, 15, 20, 30, 60, 120, 240, 480, 960, 2000, 5000, 10000)
+        return all.firstOrNull { it >= want } ?: 20000
+    }
 
-    private fun timeLabel(t: Long, tf: Int): String {
+    private fun timeLabel(t: Long): String {
         val c = java.util.Calendar.getInstance().apply { timeInMillis = t }
         val hh = c.get(java.util.Calendar.HOUR_OF_DAY)
         val mm = c.get(java.util.Calendar.MINUTE)
-        val day = c.get(java.util.Calendar.DAY_OF_MONTH)
-        val mon = c.get(java.util.Calendar.MONTH) + 1
+        val d = c.get(java.util.Calendar.DAY_OF_MONTH)
+        val mo = c.get(java.util.Calendar.MONTH) + 1
         return when {
-            tf < 3600 -> Fa.d(String.format("%02d:%02d", hh, mm))
-            tf < 86400 -> Fa.d(String.format("%02d %02d:%02d", day, hh, mm))
-            tf < 604800 -> Fa.jalaliShort(t)
+            chartTfSec < 3600 -> Fa.d(String.format("%02d:%02d", hh, mm))
+            chartTfSec < 86400 -> Fa.d(String.format("%02d/%02d %02d:%02d", mo, d, hh, mm))
             else -> Fa.jalaliShort(t)
         }
     }
 
+    private fun timeLabelFull(t: Long): String = Fa.jalali(t)
+
     private fun bubble(canvas: Canvas, x: Float, y: Float, w: Float, text: String) {
-        val r = RectF(x, y, x + w, y + Ui.dp(context, 17f))
+        val r = RectF(x, y, x + w, y + Ui.dp(context, 18f))
         canvas.drawRoundRect(r, Ui.dp(context, 3f).toFloat(), Ui.dp(context, 3f).toFloat(), pBubble)
-        canvas.drawText(text, r.left + Ui.dp(context, 4f), r.bottom - Ui.dp(context, 4.5f), pBubbleTxt)
+        canvas.drawText(text, r.left + Ui.dp(context, 5f), r.bottom - Ui.dp(context, 4.5f), pBubbleTxt)
     }
 
-    private fun drawZones(canvas: Canvas, from: Int, to: Int, barW: Float, priceH: Float) {
+    private fun drawLegend(canvas: Canvas) {
+        val i = if (hoverIdx in candles.indices) hoverIdx else candles.size - 1
+        if (i < 0) return
+        val c = candles[i]
+        var x = Ui.dp(context, 8f).toFloat()
+        val y = Ui.dp(context, 14f).toFloat()
+        pLegend.color = Palette.txt
+        canvas.drawText("$symbolName · ${com.alisport.goldpin.core.Tf.label(chartTfSec)}", x, y, pLegend)
+        x += pLegend.measureText("$symbolName · ${com.alisport.goldpin.core.Tf.label(chartTfSec)}") + Ui.dp(context, 10f)
+        pLegend.color = if (c.c >= c.o) upCol else dnCol
+        val parts = listOf("O ${Fa.n(c.o)}", "H ${Fa.n(c.h)}", "L ${Fa.n(c.l)}", "C ${Fa.n(c.c)}")
+        for (s in parts) {
+            canvas.drawText(s, x, y, pLegend)
+            x += pLegend.measureText(s) + Ui.dp(context, 8f)
+            if (x > plotW - Ui.dp(context, 40f)) break
+        }
+        if (showVolume) {
+            pLegend.color = axisText
+            canvas.drawText("V ${Fa.vol(c.v)}", x, y, pLegend)
+        }
+    }
+
+    private fun drawZones(canvas: Canvas, from: Int, to: Int, priceH: Float) {
         for (z in zones) {
             if (z.status == ZoneStatus.CAP) continue
-            val x1 = idxToX(z.createdBi.toFloat())
-            val endIdx = if (z.status == ZoneStatus.ACTIVE) rightIndex + 2f else z.endBi.toFloat()
-            val x2 = idxToX(endIdx)
-            if (x2 < -barW || x1 > chartW - axisW + barW) continue
-            if (max(x1, x2) < 0f) continue
-            val yTop = priceToY(z.top)
-            val yBot = priceToY(z.bot)
+            val x1 = xOf(z.createdBi.toFloat())
+            val endIdx = if (z.status == ZoneStatus.ACTIVE) rightIdx + 2f else z.endBi.toFloat()
+            val x2 = xOf(endIdx)
+            if (x2 < -barW || x1 > plotW + barW) continue
+            val left = max(min(x1, x2), -barW)
+            val right = min(max(x1, x2), plotW + barW)
+            val yT = yOf(z.top)
+            val yB = yOf(z.bot)
             val active = z.status == ZoneStatus.ACTIVE
             val color = when {
                 z.status == ZoneStatus.REJECTED -> Color.parseColor("#7A8798")
                 z.status == ZoneStatus.DELETED -> Color.parseColor("#5A6472")
-                z.dir == 1 && z.idx == 1 -> Palette.up
-                z.dir == -1 && z.idx == 1 -> Color.parseColor("#FF8A3D")
-                else -> Palette.grey
+                z.dir == 1 -> upCol
+                else -> Color.parseColor("#FF8A3D")
             }
-            val alpha = if (active) 40 else 18
-            pZoneFill.color = (color and 0x00FFFFFF) or (alpha shl 24)
+            pZoneFill.color = (color and 0x00FFFFFF) or ((if (active) 34 else 14) shl 24)
             pZoneFill.style = Paint.Style.FILL
-            val left = max(x1, -barW)
-            val right = min(x2, chartW - axisW + barW)
-            canvas.drawRect(left, yTop, right, yBot, pZoneFill)
-            val linePaint = if (z.status == ZoneStatus.REJECTED || z.status == ZoneStatus.DELETED) pDotted else pZoneLine
-            linePaint.color = (color and 0x00FFFFFF) or (if (active) 0xC0000000.toInt() else 0x60000000)
-            canvas.drawLine(left, yTop, right, yTop, linePaint)
-            canvas.drawLine(left, yBot, right, yBot, linePaint)
-            if (active && barW > 3f) {
-                // برچسب شمارهٔ ناحیه
-                pLabelBg.color = (color and 0x00FFFFFF) or (0xB0000000.toInt())
-                canvas.drawRoundRect(RectF(left + 2f, yTop + 2f, left + Ui.dp(context, 30f), yTop + Ui.dp(context, 15f)),
-                        Ui.dp(context, 3f).toFloat(), Ui.dp(context, 3f).toFloat(), pLabelBg)
-                canvas.drawText("Z" + Fa.d(z.idx.toString()), left + Ui.dp(context, 5f), yTop + Ui.dp(context, 12.5f), pLabelTxt)
+            canvas.drawRect(left, yT, right, yB, pZoneFill)
+            val lp = if (active) pZoneLine else pDotted
+            lp.color = (color and 0x00FFFFFF) or (if (active) 0xB0000000.toInt() else 0x55000000)
+            canvas.drawLine(left, yT, right, yT, lp)
+            canvas.drawLine(left, yB, right, yB, lp)
+            if (active && barW > 3.5f) {
+                pLabelBg.color = (color and 0x00FFFFFF) or 0xB0000000.toInt()
+                canvas.drawRoundRect(
+                    RectF(left + 2f, yT + 2f, left + Ui.dp(context, 30f), yT + Ui.dp(context, 15f)),
+                    Ui.dp(context, 3f).toFloat(), Ui.dp(context, 3f).toFloat(), pLabelBg
+                )
+                canvas.drawText("Z${Fa.d(z.idx.toString())}", left + Ui.dp(context, 5f), yT + Ui.dp(context, 12.5f), pLabelTxt)
             }
         }
     }
 
-    private fun drawMarkers(canvas: Canvas, from: Int, to: Int, cw: Float, priceH: Float) {
+    private fun drawMarkers(canvas: Canvas, from: Int, to: Int, priceH: Float) {
         for (m in markers) {
             if (m.bi < from - 2 || m.bi > to + 2) continue
-            val x = idxToX(m.bi.toFloat())
-            if (x < 0 || x > cw) continue
-            val y = priceToY(m.price)
+            val x = xOf(m.bi.toFloat())
+            if (x < 0 || x > plotW) continue
+            val y = yOf(m.price)
             if (y < -20 || y > priceH + 30) continue
             val col = when (m.kind) {
                 1 -> Palette.accent
                 -1 -> Color.parseColor("#C2417C")
                 5 -> Palette.gold
-                6 -> Palette.accent
-                7 -> Palette.up
+                7 -> upCol
                 8 -> Palette.gold
                 9 -> Palette.violet
-                10 -> Palette.down
+                10 -> dnCol
                 else -> Palette.grey
             }
             val r = Ui.dp(context, 3f).toFloat()
@@ -520,34 +895,31 @@ class ChartView @JvmOverloads constructor(
             path.lineTo(x + r * 2, cy)
             path.close()
             canvas.drawPath(path, pBody)
-            // فقط برچسب‌های مهم متن دارند
-            if (m.bi >= from + 1 && barW(cw) > 4f && m.text.isNotEmpty() && m.kind != 2 && m.kind != 6) {
+            if (barW > 4.2f && m.text.isNotEmpty() && m.kind != 2 && m.kind != 6) {
                 val t = m.text.lineSequence().first()
-                pTextSm.color = col
-                canvas.drawText(t, x + r * 2.4f, cy, pTextSm)
-                pTextSm.color = Palette.dim
+                pTxtSm.color = col
+                canvas.drawText(t, x + r * 2.4f, cy, pTxtSm)
+                pTxtSm.color = axisText
             }
         }
     }
 
-    private fun barW(cw: Float): Float = cw / barsOnScreen
-
-    private fun drawTradeLines(canvas: Canvas, cw: Float, priceH: Float) {
+    private fun drawTradeLines(canvas: Canvas, priceH: Float) {
         fun line(price: Double, color: Int, label: String, fromIdx: Float) {
             if (price.isNaN()) return
-            val y = priceToY(price)
+            val y = yOf(price)
             if (y < 0 || y > priceH) return
             pDashed.color = color
-            val x0 = max(0f, idxToX(fromIdx))
-            canvas.drawLine(x0, y, cw.toFloat(), y, pDashed)
-            pLabelBg.color = (color and 0x00FFFFFF) or 0xD0000000.toInt()
-            val w = Ui.dp(context, 4f) + pLabelTxt.measureText(label)
-            canvas.drawRoundRect(RectF(x0, y - Ui.dp(context, 7f), x0 + w, y + Ui.dp(context, 7f)),
+            val x0 = max(0f, xOf(fromIdx))
+            canvas.drawLine(x0, y, plotW, y, pDashed)
+            if (label.isNotEmpty()) {
+                pLabelBg.color = (color and 0x00FFFFFF) or 0xCC000000.toInt()
+                val w = Ui.dp(context, 5f) + pLabelTxt.measureText(label)
+                canvas.drawRoundRect(RectF(x0, y - Ui.dp(context, 7.5f), x0 + w, y + Ui.dp(context, 7.5f)),
                     Ui.dp(context, 3f).toFloat(), Ui.dp(context, 3f).toFloat(), pLabelBg)
-            canvas.drawText(label, x0 + Ui.dp(context, 2f), y + Ui.dp(context, 3.5f), pLabelTxt)
+                canvas.drawText(label, x0 + Ui.dp(context, 2.5f), y + Ui.dp(context, 3.5f), pLabelTxt)
+            }
         }
-
-        // سطوح ستاپ‌های فعال
         for (o in overlays) {
             if (o.stage == 8) continue
             line(o.zTop, Color.parseColor("#39B27C"), "ناحیه", o.zBi.toFloat())
@@ -561,18 +933,17 @@ class ChartView @JvmOverloads constructor(
                 line(o.hvL, Palette.accent, "", o.zBi.toFloat())
             }
             if (o.stage >= 6) {
-                line(o.entry, Palette.up, "ورود", o.zBi.toFloat())
-                line(o.sl, Palette.down, "حدضرر", o.zBi.toFloat())
+                line(o.entry, upCol, "ورود", o.zBi.toFloat())
+                line(o.sl, dnCol, "حدضرر", o.zBi.toFloat())
                 line(o.tp1, Color.parseColor("#FFB74D"), "TP1", o.zBi.toFloat())
                 line(o.tp2, Color.parseColor("#FFB74D"), "TP2", o.zBi.toFloat())
                 line(o.tpx, Palette.violet, "TP نهایی", o.zBi.toFloat())
             }
         }
-        // پوزیشن باز / آخرین معاملهٔ بسته‌شده
         val t = trades.lastOrNull { it.open } ?: trades.lastOrNull()
         if (t != null) {
-            line(t.entry, Palette.up, if (t.open) "ورود باز" else "ورود بسته", t.entryBi.toFloat())
-            line(if (t.be) t.entry else t.sl0, Palette.down, if (t.be) "سربه‌سر" else "حدضرر", t.entryBi.toFloat())
+            line(t.entry, upCol, if (t.open) "ورود باز" else "ورود", t.entryBi.toFloat())
+            line(if (t.be) t.entry else t.sl0, dnCol, if (t.be) "سربه‌سر" else "حدضرر", t.entryBi.toFloat())
             line(t.tpX, Palette.violet, "TP", t.entryBi.toFloat())
         }
     }

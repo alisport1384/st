@@ -15,7 +15,9 @@ import android.os.PowerManager
 import com.alisport.goldpin.AppState
 import com.alisport.goldpin.MainActivity
 import com.alisport.goldpin.core.OrderStatus
+import com.alisport.goldpin.util.Alerts
 import com.alisport.goldpin.util.Fa
+import com.alisport.goldpin.util.Log
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  سرویس همیشه‌فعال — ارزیابی زندهٔ شرایط و ثبت سفارش‌ها در پس‌زمینه
@@ -38,7 +40,8 @@ class EngineService : Service() {
                     updateNotification()
                 }
             } catch (e: Exception) {
-                // در پس‌زمینه هرگز کرش نکن
+                // در پس‌زمینه هرگز کرش نکن — فقط لاگ کن
+                Log.e(Log.CAT_LIVE, "خطا در حلقهٔ ارزیابی زنده", e)
             }
             handler.postDelayed(this, state.livePollMs)
         }
@@ -46,6 +49,7 @@ class EngineService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Log.i(Log.CAT_LIVE, "سرویس ارزیابی زنده ساخته شد", "فاصله=${state.livePollMs}ms")
         createChannel()
         try {
             val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
@@ -59,6 +63,9 @@ class EngineService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         state.liveRunning = true
+        Alerts.liveRunning = true
+        Alerts.inBacktest = false
+        Log.i(Log.CAT_LIVE, "سرویس ارزیابی زنده شروع شد", "فاصله=${state.livePollMs}ms نماد=${state.symbol}")
         startForeground(NOTIF_ID, buildNotification())
         handler.removeCallbacks(tick)
         handler.post(tick)
@@ -66,9 +73,11 @@ class EngineService : Service() {
     }
 
     override fun onDestroy() {
+        Log.i(Log.CAT_LIVE, "سرویس ارزیابی زنده متوقف شد")
         handler.removeCallbacks(tick)
         try { wakeLock?.release() } catch (e: Exception) { }
         state.liveRunning = false
+        Alerts.liveRunning = false
         state.saveToAutoFile(this)
         state.notifyUi()
         super.onDestroy()
@@ -80,6 +89,7 @@ class EngineService : Service() {
         val now = System.currentTimeMillis()
         if (now - lastAutosave > state.autosaveEveryMs) {
             lastAutosave = now
+            Log.d(Log.CAT_LIVE, "ذخیرهٔ خودکار دوره‌ای در پس‌زمینه")
             state.io.execute { state.saveToAutoFile(applicationContext) }
         }
     }

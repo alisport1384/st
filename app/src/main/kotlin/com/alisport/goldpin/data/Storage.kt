@@ -2,6 +2,7 @@ package com.alisport.goldpin.data
 
 import android.content.Context
 import android.net.Uri
+import com.alisport.goldpin.util.Log
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
@@ -28,23 +29,30 @@ object Storage {
 
     fun writeText(file: File, json: String) {
         GZIPOutputStream(file.outputStream().buffered()).use { it.write(json.toByteArray(Charsets.UTF_8)) }
+        Log.d(Log.CAT_STORE, "فایل وضعیت نوشته شد", "مسیر=${file.absolutePath} بایت=${file.length()}")
     }
 
     fun readText(file: File): String {
         if (!file.exists()) throw FeedException("فایل ذخیره وجود ندارد")
-        return readStream(file.inputStream(), gz = true)
+        val t0 = System.currentTimeMillis()
+        val txt = readStream(file.inputStream(), gz = true)
+        Log.d(Log.CAT_STORE, "فایل وضعیت خوانده شد", "مسیر=${file.absolutePath} بایت=${file.length()} مدت=${System.currentTimeMillis() - t0}ms")
+        return txt
     }
 
     fun writeUri(ctx: Context, uri: Uri, json: String) {
         val os: OutputStream = ctx.contentResolver.openOutputStream(uri, "wt")
             ?: throw FeedException("نوشتن در مسیر انتخابی ممکن نشد")
         GZIPOutputStream(os.buffered()).use { it.write(json.toByteArray(Charsets.UTF_8)) }
+        Log.i(Log.CAT_STORE, "ذخیره در مسیر انتخابی", "uri=$uri بایت=${json.length}")
     }
 
     fun readUri(ctx: Context, uri: Uri): String {
         val ins: InputStream = ctx.contentResolver.openInputStream(uri)
             ?: throw FeedException("خواندن از مسیر انتخابی ممکن نشد")
-        return readStream(ins, gz = true)
+        val txt = readStream(ins, gz = true)
+        Log.i(Log.CAT_STORE, "خواندن از مسیر انتخابی", "uri=$uri بایت=${txt.length}")
+        return txt
     }
 
     /** خواندن با تشخیص خودکار gzip */
@@ -64,5 +72,6 @@ object Storage {
         ctx.contentResolver.openOutputStream(uri, "wt")?.use { os ->
             os.write(text.toByteArray(Charsets.UTF_8))
         } ?: throw FeedException("نوشتن گزارش ممکن نشد")
+        Log.i(Log.CAT_STORE, "گزارش نوشته شد", "uri=$uri بایت=${text.length}")
     }
 }

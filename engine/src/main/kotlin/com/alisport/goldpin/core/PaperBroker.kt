@@ -24,6 +24,15 @@ class PaperBroker(private val cfg: Settings) {
     var lastError: String? = null
     var engine: Engine? = null
 
+    /** قلاب‌های لاگر و هشدار (اپ وصل می‌کند) */
+    var logSink: ((String, String, String?) -> Unit)? = null
+    var alertSink: ((String, String, String) -> Unit)? = null
+
+    private fun lg(cat: String, msg: String, data: String? = null) { logSink?.invoke(cat, msg, data) }
+
+    private fun fmt(v: Double): String = if (v.isNaN()) "-" else String.format("%.2f", v)
+    private fun alarm(kind: String, title: String, body: String) { alertSink?.invoke(kind, title, body) }
+
     private var pending: Order? = null
     private var open: Trade? = null
 
@@ -76,9 +85,14 @@ class PaperBroker(private val cfg: Settings) {
         s.orderId = o.id
         orders.add(o)
         pending = o
+        lg("ORDER", "سفارش ورود ثبت شد (آماده) · ستاپ #${s.id}",
+            "type=${if (s.dir == 1) "BUY_LIMIT" else "SELL_LIMIT"} price=${fmt(entryPx)} sl=${fmt(s.sl)} tp1=${fmt(s.tp1)} tp2=${fmt(s.tp2)} tp=${fmt(s.tpx)} qty=${fmt(qty)} bar=${bar.bi}")
+        alarm(AlertKind.ARMED, if (s.dir == 1) "سفارش خرید آماده شد" else "سفارش فروش آماده شد",
+            "ستاپ #${s.id} · ورود ${fmt(entryPx)} · حدضرر ${fmt(s.sl)} · حدسود ${fmt(s.tpx)} · حجم ${fmt(qty)}")
     }
 
     fun cancel(order: Order, reason: String, t: Long, bi: Int) {
+        lg("ORDER", "سفارش لغو شد · #${order.id}", "reason=$reason status=${order.status}")
         order.status = OrderStatus.CANCELLED_INVALID
         order.cancelReason = reason
         order.closedT = t
@@ -118,6 +132,8 @@ class PaperBroker(private val cfg: Settings) {
                 fillEntry(p, cd)
             } else if (barsWaiting > cfg.maxBarsToFill) {
                 cancel(p, "مهلت پر شدن تمام شد ($barsWaiting کندل)", cd.t, cd.bi)
+                alarm(AlertKind.CANCEL, "سفارش ورود منقضی شد",
+                    "پس از $barsWaiting کندل پر نشد · قیمت ${fmt(p.price)}")
             }
         }
         // ② مدیریت پوزیشن باز
@@ -141,6 +157,10 @@ class PaperBroker(private val cfg: Settings) {
         tr.fills.add(Fill(cd.t, cd.bi, o.price, o.qty, "ENTRY", 0.0))
         trades.add(tr)
         open = tr
+        lg("TRADE", "سفارش پر شد → ورود انجام شد · معامله #${tr.id}",
+            "dir=${if (tr.dir == 1) "BUY" else "SELL"} entry=${fmt(tr.entry)} sl=${fmt(tr.sl0)} tp=${fmt(tr.tpX)} qty=${fmt(tr.qty)} bar=${cd.bi}")
+        alarm(AlertKind.FILLED, if (tr.dir == 1) "ورود خرید انجام شد" else "ورود فروش انجام شد",
+            "معامله #${tr.id} · ورود ${fmt(tr.entry)} · حدضرر ${fmt(tr.sl0)} · حدسود ${fmt(tr.tpX)}")
     }
 
     private fun manageBar(t: Trade, cd: Candle) {
@@ -187,6 +207,13 @@ class PaperBroker(private val cfg: Settings) {
         maxEquity = max(maxEquity, balance)
         val dd = maxEquity - balance
         if (dd > maxDrawdown) maxDrawdown = dd
+        lg("TRADE", "پلهٔ خروج $kind اجرا شد · معامله #${t.id}",
+            "px=${fmt(px)} qty=${fmt(q)} pnl=${fmt(pnl)} موجودی=${fmt(balance)}")
+        val kindAlert = when (kind) {
+            "TP1" -> AlertKind.TP1; "TP2" -> AlertKind.TP2; "TPX" -> AlertKind.TPX
+            "SL" -> AlertKind.SL; "BE" -> AlertKind.BE; else -> AlertKind.CLOSE
+        }
+        alarm(kindAlert, "خروج $kind", "معامله #${t.id} · قیمت ${fmt(px)} · حجم ${fmt(q)} · سود/زیان ${fmt(pnl)} دلار")
     }
 
     private fun closeAll(t: Trade, px: Double, time: Long, bi: Int, reason: String) {
@@ -209,6 +236,10 @@ class PaperBroker(private val cfg: Settings) {
         t.exitT = time; t.exitBi = bi; t.exitPx = px
         t.reason = reason
         open = null
+        lg("TRADE", "معامله #${t.id} بسته شد", "reason=$reason exit=${fmt(px)} pnl=${fmt(t.pnl())} R=${fmt(t.rMultiple())} موجودی=${fmt(balance)}")
+        val pnl = t.pnl()
+        alarm(AlertKind.CLOSE, "معامله بسته شد · ${t.reason}",
+            "معامله #${t.id} · خروج ${fmt(px)} · سود/زیان ${fmt(pnl)} دلار · ${fmt(t.rMultiple())}R")
     }
 
     /** به‌روزرسانی موجودی و سود/زیان شناور با قیمت جاری. */

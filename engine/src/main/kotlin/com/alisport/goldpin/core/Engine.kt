@@ -121,6 +121,20 @@ class Engine(val cfg: Settings) {
     /** قلاب همگام‌سازی: بعد از پردازش هر کندل بسته فراخوانی می‌شود (برای کارگزار کاغذی). */
     var barCommitHook: ((Candle) -> Unit)? = null
 
+    // ── قلاب‌های لاگر و هشدار (اپ آن‌ها را وصل می‌کند؛ موتور خالص می‌ماند) ──
+    /** (دسته ، پیام ، داده) */
+    var logSink: ((String, String, String?) -> Unit)? = null
+    /** (نوع هشدار AlertKind ، عنوان ، توضیح) */
+    var alertSink: ((String, String, String) -> Unit)? = null
+
+    private fun lg(cat: String, msg: String, data: String? = null) {
+        logSink?.invoke(cat, msg, data)
+    }
+
+    private fun alarm(kind: String, title: String, body: String) {
+        alertSink?.invoke(kind, title, body)
+    }
+
     val tf2: Int get() = cfg.tf2
 
     fun reset() {
@@ -267,11 +281,15 @@ class Engine(val cfg: Settings) {
                 val (impH, impL, impBi) = pickLow(a, b)
                 val refLo = min(a.c, b.o)
                 pins.add(Pin(1, impH, impL, impBi, b.bi, refLo, 0))
+                lg("ENGINE", "کاندید کندل مهم پایین‌ترین‌ها ثبت شد",
+                    "kind=BU hi=${f2(impH)} lo=${f2(impL)} ref=${f2(refLo)} bar=${b.bi}")
             }
             if (a.c > a.o && b.c < b.o) {                       // کندل مهم در بالاترین‌ها
                 val (impH2, impL2, impBi2) = pickHigh(a, b)
                 val refHi = max(a.c, b.o)
                 pins.add(Pin(-1, impH2, impL2, impBi2, b.bi, refHi, 0))
+                lg("ENGINE", "کاندید کندل مهم بالاترین‌ها ثبت شد",
+                    "kind=BE hi=${f2(impH2)} lo=${f2(impL2)} ref=${f2(refHi)} bar=${b.bi}")
             }
         }
 
@@ -298,6 +316,9 @@ class Engine(val cfg: Settings) {
                         lastBUpin = pBU.lo
                         lowestBUpin = if (lowestBUpin.isNaN()) pBU.lo else min(lowestBUpin, pBU.lo)
                         addMarker(pBU.impBi, pBU.lo, 1, "کندل مهم پایین‌ترین\nReady BU · pinBU")
+                        lg("ENGINE", "Ready BU (pinBU) تایید شد", "lo=${f2(pBU.lo)} hi=${f2(pBU.hi)} bar=${sb.bi}")
+                        alarm(AlertKind.PIN, "کندل مهم · Ready BU",
+                            "کف ${f2(pBU.lo)} — کندل مهم پایین‌ترین‌ها تایید شد (${Tf.label(cfg.tfS)})")
                         when (trend) {
                             0 -> {
                                 if (seqStart == 0) {
@@ -326,6 +347,9 @@ class Engine(val cfg: Settings) {
                         lastBEpin = pBE.hi
                         highestBE = if (highestBE.isNaN()) pBE.hi else max(highestBE, pBE.hi)
                         addMarker(pBE.impBi, pBE.hi, -1, "کندل مهم بالاترین\nReady BE · pinBE")
+                        lg("ENGINE", "Ready BE (pinBE) تایید شد", "hi=${f2(pBE.hi)} lo=${f2(pBE.lo)} bar=${sb.bi}")
+                        alarm(AlertKind.PIN, "کندل مهم · Ready BE",
+                            "سقف ${f2(pBE.hi)} — کندل مهم بالاترین‌ها تایید شد (${Tf.label(cfg.tfS)})")
                         when (trend) {
                             0 -> {
                                 if (seqStart == 0) {
@@ -356,18 +380,32 @@ class Engine(val cfg: Settings) {
                 if (bullSetup && !bullBEHigh.isNaN() && sb.c > bullBEHigh && sb.bi > bullBU2Bi) {
                     trend = 1; HH = bullBEHigh; HL = bullBU2Low
                     bullSetup = false; bearSetup = false; evTrendUp = true
+                    lg("ENGINE", "روند صعودی تثبیت شد", "HH=${f2(HH)} HL=${f2(HL)} close=${f2(sb.c)}")
+                    alarm(AlertKind.TREND, "روند صعودی شد",
+                        "HH=${f2(HH)} · HL=${f2(HL)} · کلوز=${f2(sb.c)}")
                 } else if (bearSetup && !bearBULow.isNaN() && sb.c < bearBULow && sb.bi > bearBE2Bi) {
                     trend = -1; LL = bearBULow; LH = bearBE2High
                     bullSetup = false; bearSetup = false; evTrendDn = true
+                    lg("ENGINE", "روند نزولی تثبیت شد", "LL=${f2(LL)} LH=${f2(LH)} close=${f2(sb.c)}")
+                    alarm(AlertKind.TREND, "روند نزولی شد",
+                        "LL=${f2(LL)} · LH=${f2(LH)} · کلوز=${f2(sb.c)}")
                 }
             }
             1 -> {
                 if (sb.c > HH) HH = sb.c
-                else if (sb.c < HL) { trend = -1; LL = sb.c; LH = HH; evChgDn = true }
+                else if (sb.c < HL) {
+                    trend = -1; LL = sb.c; LH = HH; evChgDn = true
+                    lg("ENGINE", "روند به نزولی برگشت", "LL=${f2(LL)} LH=${f2(LH)} close=${f2(sb.c)}")
+                    alarm(AlertKind.TREND, "تغییر روند به نزولی", "LL=${f2(LL)} · LH=${f2(LH)} · کلوز=${f2(sb.c)}")
+                }
             }
             -1 -> {
                 if (sb.c < LL) LL = sb.c
-                else if (sb.c > LH) { trend = 1; HH = sb.c; HL = LL; evChgUp = true }
+                else if (sb.c > LH) {
+                    trend = 1; HH = sb.c; HL = LL; evChgUp = true
+                    lg("ENGINE", "روند به صعودی برگشت", "HH=${f2(HH)} HL=${f2(HL)} close=${f2(sb.c)}")
+                    alarm(AlertKind.TREND, "تغییر روند به صعودی", "HH=${f2(HH)} · HL=${f2(HL)} · کلوز=${f2(sb.c)}")
+                }
             }
         }
         if (evChgDn || evTrendDn) cancelDir(1)
@@ -384,7 +422,11 @@ class Engine(val cfg: Settings) {
         if (dirOK && !prof.step.isNaN() && prof.step > 0) {
             val rej = VolumeProfile.zones(prof, cfg.vpRows, bullC, sb.c, cfg.minZoneRows, wantRejected = true)
             cnt.zoneRejected += rej.size
-            if (cfg.showRejectedZones) for (rz in rej) addZoneBox(trend, rz, sb, ZoneStatus.REJECTED)
+            if (cfg.showRejectedZones) for (rz in rej) {
+                addZoneBox(trend, rz, sb, ZoneStatus.REJECTED)
+                lg("ZONE", "ناحیهٔ ردشده (کلوز داخل محدوده بود)",
+                    "dir=${if (bullC) "BULL" else "BEAR"} top=${f2(rz.top)} bot=${f2(rz.bot)} rows=${rz.loIdx}-${rz.hiIdx} bar=${sb.bi}")
+            }
             val zs = VolumeProfile.zones(prof, cfg.vpRows, bullC, sb.c, cfg.minZoneRows)
             for (z in zs) {
                 if (z.top > z.bot) {
@@ -394,6 +436,10 @@ class Engine(val cfg: Settings) {
                     val st = Setup(setupSeq++, trend, 0, z.top, z.bot, z.idx, sb.bi)
                     st.note = "ثبت شد"
                     setups.add(st)
+                    lg("ZONE", "ناحیهٔ فیکس‌رنج ثبت شد · Z${z.idx}",
+                        "dir=${if (bullC) "BULL" else "BEAR"} top=${f2(z.top)} bot=${f2(z.bot)} rows=${z.loIdx}-${z.hiIdx} bar=${sb.bi} setup=${st.id}")
+                    alarm(AlertKind.ZONE_NEW, "ناحیهٔ فیکس‌رنج Z${z.idx} ساخته شد",
+                        "${if (bullC) "صعودی" else "نزولی"} · ${f2(z.bot)} تا ${f2(z.top)} · ستاپ #${st.id}")
                 }
             }
             pruneSetups()
@@ -437,6 +483,8 @@ class Engine(val cfg: Settings) {
                 s.stage = 2
                 cnt.mid++
                 s.lvReEntered = false
+                lg("ENGINE", "تایید میانی انجام شد · ستاپ #${s.id}",
+                    if (s.dir == 1) "کف تایید=${f2(s.midRef)} bar=${mc.bi}" else "سقف تایید=${f2(s.midRef)} bar=${mc.bi}")
                 addMarker(mc.bi, s.midRef, 3, if (s.dir == 1) "کف تایید میانی" else "سقف تایید میانی")
             } else if (!s.midRef.isNaN() && s.markBi < 0) {
                 // ◆ مارک کردن کندل بعد از تایید (فقط نشانه)
@@ -457,6 +505,7 @@ class Engine(val cfg: Settings) {
                     s.lvBi = -1; s.lvConfBi = -1; s.hvBi = -1; s.hvScanBi = -1; s.runMax = Double.NaN
                     s.lvTouched = false; s.lvUsed = false
                     addMarker(mc.bi, old, 10, "تایید میانی باطل شد")
+                    lg("ENGINE", "تایید میانی باطل شد · ستاپ #${s.id}", "سطح قبلی=${f2(old)} bar=${mc.bi}")
                 }
             }
         }
@@ -476,6 +525,8 @@ class Engine(val cfg: Settings) {
                     if (prevT1Vol.isNaN() || q1.v < prevT1Vol) {
                         s.lvBi = q1.bi; s.lvH = q1.h; s.lvL = q1.l
                         addMarker(q1.bi, if (bullL) q1.l else q1.h, 4, "کندل ولوم کم (تریگر۱)")
+                        lg("ENGINE", "کندل ولوم کم مارک شد · ستاپ #${s.id}",
+                            "vol=${f2(q1.v)} < prev=${f2(prevT1Vol)} hi=${f2(q1.h)} lo=${f2(q1.l)} bar=${q1.bi}")
                     }
                 } else {
                     val violL = if (bullL) q1.l <= s.lvL else q1.h >= s.lvH
@@ -492,6 +543,10 @@ class Engine(val cfg: Settings) {
                         s.hvBi = -1
                         if (!cfg.hvScanFirstTouch) s.hvScanBi = curBi
                         addMarker(q1.bi, if (bullL) s.lvH else s.lvL, 5, "ناحیهٔ ولوم کم ✔ (تریگر۱)")
+                        lg("ENGINE", "ناحیهٔ ولوم کم تایید شد · ستاپ #${s.id}",
+                            "box=${f2(s.lvL)}-${f2(s.lvH)} bar=${q1.bi} مرحله=${s.stage}")
+                        alarm(AlertKind.LV, "ناحیهٔ ولوم کم تایید شد",
+                            "ستاپ #${s.id} · باکس ${f2(s.lvL)} تا ${f2(s.lvH)} · منتظر کندل ولوم زیاد (تریگر ۲)")
                     }
                 }
             }
@@ -507,6 +562,8 @@ class Engine(val cfg: Settings) {
                     if (left) {
                         s.lvUsed = true
                         addMarker(q1.bi, if (bullL) s.lvH else s.lvL, 11, "باکس ولوم کم مصرف شد ✖")
+                        lg("ZONE", "باکس ولوم کم مصرف شد (یک‌بارمصرف) · ستاپ #${s.id}",
+                            "box=${f2(s.lvL)}-${f2(s.lvH)} bar=${q1.bi}")
                         if (s.stage == 4 || s.stage == 5) {
                             s.stage = 8
                             s.note = "باکس ولوم کم مصرف شد (یک‌بار)"
@@ -534,6 +591,8 @@ class Engine(val cfg: Settings) {
                     s.touchBi = curBi
                     s.touchMidStart = aggM.cur?.t ?: cd.t
                     addMarker(curBi, if (bull) s.zBot else s.zTop, 2, "برخورد · منتظر بسته شدن کندل میانی")
+                    lg("ENGINE", "برخورد قیمت با ناحیهٔ ساختار · ستاپ #${s.id}",
+                        "zone=${f2(s.zBot)}-${f2(s.zTop)} bar=$curBi · منتظر تایید میانی (${Tf.label(cfg.tfM)})")
                 }
             }
 
@@ -546,6 +605,10 @@ class Engine(val cfg: Settings) {
                     s.note = "شکست ناحیهٔ ساختار (لغو)"
                     events.add("[${s.id}] لغو شد — شکست ناحیهٔ ساختار")
                     addMarker(curBi, close, 10, "لغو · شکست ناحیهٔ ساختار")
+                    lg("ZONE", "ناحیهٔ ساختار شکست (لغو ستاپ #${s.id})",
+                        "zone=${f2(s.zBot)}-${f2(s.zTop)} close=${f2(close)} bar=$curBi")
+                    alarm(AlertKind.ZONE_DEAD, "ناحیهٔ ساختار شکست",
+                        "ستاپ #${s.id} لغو شد · کلوز ${f2(close)} خارج از ناحیهٔ ${f2(s.zBot)}-${f2(s.zTop)}")
                 }
             }
 
@@ -556,6 +619,8 @@ class Engine(val cfg: Settings) {
                     if (s.hvScanBi < 0) s.hvScanBi = curBi
                     s.runMax = volume
                     addMarker(curBi, if (bull) s.lvH else s.lvL, 5, "بازگشت به باکس ولوم کم · اسکن ولوم زیاد")
+                    lg("ENGINE", "بازگشت به باکس ولوم کم → اسکن ناحیهٔ ولوم زیاد فعال شد · ستاپ #${s.id}",
+                        "box=${f2(s.lvL)}-${f2(s.lvH)} bar=$curBi vol=${f2(volume)}")
                 }
             }
 
@@ -568,6 +633,8 @@ class Engine(val cfg: Settings) {
                     val conf = marked && (if (bull) close > s.hvH else close < s.hvL)
                     if (viol) {
                         s.hvBi = -1; s.runMax = volume; s.stage = 4
+                        lg("ENGINE", "کندل ولوم زیاد نقض شد → جست‌وجوی کندل جدید · ستاپ #${s.id}",
+                            "hvH=${f2(s.hvH)} hvL=${f2(s.hvL)} bar=$curBi")
                     } else if (conf) {
                         armSetup(s, cd, bull)
                     } else {
@@ -580,6 +647,8 @@ class Engine(val cfg: Settings) {
                             s.hvBi = curBi; s.hvH = high; s.hvL = low
                             s.runMax = volume; s.stage = 5
                             addMarker(curBi, if (bull) low else high, 6, "کندل ولوم زیاد (مارک)")
+                            lg("ENGINE", "کندل ولوم زیاد مارک شد · ستاپ #${s.id}",
+                                "vol=${f2(volume)} hi=${f2(high)} lo=${f2(low)} bar=$curBi مرحله=5")
                         }
                     }
                 }
@@ -596,6 +665,8 @@ class Engine(val cfg: Settings) {
                     cnt.entry++
                     lastEntryPx = s.entry; lastSlPx = s.sl; lastTpPx = s.tpx
                     addMarker(curBi, s.entry, 8, (if (bull) "ورود خرید" else "ورود فروش") + " @ " + f2(s.entry))
+                    lg("TRADE", "قیمت به ناحیهٔ ولوم زیاد برگشت (شرط ورود) · ستاپ #${s.id}",
+                        "ورود=${f2(s.entry)} bar=$curBi")
                 }
             }
 
@@ -610,6 +681,9 @@ class Engine(val cfg: Settings) {
                     else if (!s.be && !s.tp1.isNaN() && high >= s.tp1) {
                         s.be = true; s.sl = s.entry
                         addMarker(curBi, s.entry, 8, "TP1 (38%) ✔ · حدضرر = سر‌به‌سر")
+                        lg("TRADE", "TP1 (۳۸٪) لمس شد → حدضرر به سر‌به‌سر منتقل شد · ستاپ #${s.id}",
+                            "tp1=${f2(s.tp1)} bar=$curBi")
+                        alarm(AlertKind.TP1, "TP1 (۳۸٪) لمس شد", "ستاپ #${s.id} · حدضرر به سر‌به‌سر منتقل شد · ${f2(s.tp1)}")
                     } else if (s.be && low <= s.entry) { done = true; px = s.entry; note = "خروج سر‌به‌سر" }
                 } else {
                     if (high >= s.sl) { done = true; px = s.sl; note = if (s.be) "خروج سر‌به‌سر" else "حد ضرر" }
@@ -617,6 +691,9 @@ class Engine(val cfg: Settings) {
                     else if (!s.be && !s.tp1.isNaN() && low <= s.tp1) {
                         s.be = true; s.sl = s.entry
                         addMarker(curBi, s.entry, 8, "TP1 (38%) ✔ · حدضرر = سر‌به‌سر")
+                        lg("TRADE", "TP1 (۳۸٪) لمس شد → حدضرر به سر‌به‌سر منتقل شد · ستاپ #${s.id}",
+                            "tp1=${f2(s.tp1)} bar=$curBi")
+                        alarm(AlertKind.TP1, "TP1 (۳۸٪) لمس شد", "ستاپ #${s.id} · حدضرر به سر‌به‌سر منتقل شد · ${f2(s.tp1)}")
                     } else if (s.be && high >= s.entry) { done = true; px = s.entry; note = "خروج سر‌به‌سر" }
                 }
                 if (done) {
@@ -625,6 +702,8 @@ class Engine(val cfg: Settings) {
                     lastResult = note
                     s.note = note
                     addMarker(curBi, px, 9, note + " @ " + f2(px))
+                    lg("TRADE", "پایان معامله · ستاپ #${s.id} → $note",
+                        "خروج=${f2(px)} bar=$curBi")
                 }
             }
         }
@@ -663,6 +742,10 @@ class Engine(val cfg: Settings) {
         s.entry = eRef
         addMarker(curBi, eRef, 7, if (bull) "مسلح برای خرید (Armed)" else "مسلح برای فروش (Armed)")
         events.add("[${s.id}] مسلح شد · ورود ${f2(eRef)} · SL ${f2(s.sl)} · TP ${f2(s.tpx)}")
+        lg("ENGINE", "ناحیهٔ ولوم زیاد تایید شد → ستاپ مسلح (Armed) · ستاپ #${s.id}",
+            "dir=${if (bull) "BUY" else "SELL"} ورود=${f2(eRef)} SL=${f2(s.sl)} TP1=${f2(s.tp1)} TP2=${f2(s.tp2)} TP=${f2(s.tpx)} bar=$curBi")
+        alarm(AlertKind.HV, "ناحیهٔ ولوم زیاد تایید شد",
+            "ستاپ #${s.id} (" + (if (bull) "خرید" else "فروش") + ") · ورود ${f2(eRef)} · حدضرر ${f2(s.sl)} · حدسود ${f2(s.tpx)}")
         broker?.registerLimit(s, cd)
     }
 
@@ -704,6 +787,7 @@ class Engine(val cfg: Settings) {
                 s.stage = 8
                 s.note = "لغو (تغییر روند)"
                 events.add("[${s.id}] لغو شد — تغییر روند")
+                lg("ENGINE", "ستاپ #${s.id} به دلیل تغییر روند لغو شد", "dir=${if (dir == 1) "BUY" else "SELL"}")
                 broker?.onSetupInvalidated(s)
                 it.remove()
             }

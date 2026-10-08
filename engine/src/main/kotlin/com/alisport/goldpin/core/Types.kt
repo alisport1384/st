@@ -200,6 +200,31 @@ class TradeLines(
 
 enum class Dir(val s: Int) { BULL(1), BEAR(-1) }
 
+/**
+ * انواع هشدار — رشته‌های ثابت که بین موتور (Kotlin خالص) و سیستم هشدار اپ
+ * (util/Alerts.kt) مشترک‌اند. هر دو طرف از همین مقادیر استفاده می‌کنند.
+ */
+object AlertKind {
+    const val ARMED = "ARMED"        // سفارش آماده شد (Armed)
+    const val FILLED = "FILLED"      // پر شدن سفارش ورود
+    const val TP1 = "TP1"
+    const val TP2 = "TP2"
+    const val TPX = "TPX"            // حد سود نهایی ۱٫۲۷۲
+    const val SL = "SL"
+    const val BE = "BE"              // سر‌به‌سر
+    const val CLOSE = "CLOSE"        // پایان معامله
+    const val CANCEL = "CANCEL"
+    const val ZONE_NEW = "ZONE_NEW"
+    const val ZONE_DEAD = "ZONE_DEAD"
+    const val LV = "LV"              // ناحیهٔ ولوم کم
+    const val HV = "HV"              // ناحیهٔ ولوم زیاد
+    const val TREND = "TREND"
+    const val PIN = "PIN"            // کندل مهم / Ready
+    const val STAGE = "STAGE"
+    const val FEED = "FEED"
+    const val INFO = "INFO"
+}
+
 object Tf {
     const val M1 = 60
     const val M5 = 300
