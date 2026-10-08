@@ -106,7 +106,16 @@ git remote set-url origin https://github.com/alisport1384/st.git
 6. `gradle :engine:test` باید ۸ تست و `gradle :app:testReleaseUnitTest` باید ۱۳ تست را پاس کند
    (کل: **۲۱ تست / ۰ خطا**؛ جزئیات در سند ۱۲).
 
-## ۸) نسخه‌گذاری
+## ۸) تأیید بیلد از کلون تمیز (آزمایش‌شده)
+```bash
+git clone https://github.com/alisport1384/st.git buildtest && cd buildtest
+echo "sdk.dir=$ANDROID_HOME" > local.properties
+gradle :engine:test :app:testReleaseUnitTest :app:assembleRelease
+```
+نتیجهٔ ثبت‌شده: **BUILD SUCCESSFUL in 3m 47s** با **۲۱ تست / ۰ خطا** و APK امضاشدهٔ همان اندازه (۱٬۳۹۴٬۰۰۲ بایت)
+و همان اثر انگشت گواهی (`b88fc3db…27cba`) ⇒ مخزن عمومی از صفر بیلد می‌شود.
+
+## ۹) نسخه‌گذاری
 * `versionName` در `app/build.gradle.kts` (نسخهٔ فعلی: **1.1**)
 * `versionCode` عدد صحیح افزایشی (۱٫۰ = 1، ۱٫۱ = 2)
 * هر نسخه: یک ورودی در `13_CHANGELOG_FA.md` + APK در ریشهٔ پروژهٔ تحویل + باندل ریپو
