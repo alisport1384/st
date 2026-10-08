@@ -1,0 +1,772 @@
+package com.alisport.goldpin.core
+
+import kotlin.math.abs
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.min
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  موتور PinReady — پورت کامل اسکریپت Pine «PinReady_FRVP_Strategy»
+//  زنجیره: کندل مهم → Ready(BU/BE) → pinBU/pinBE → روند(HH/HL/LL/LH)
+//          → ناحیهٔ فیکس‌رنج (الگوریتم v2) → تایید میانی → ناحیهٔ ولوم کم (تریگر۱)
+//          → ناحیهٔ ولوم زیاد (تریگر۲ / چارت) → ورود / حدضرر / حدسود / سر‌به‌سر
+//
+//  ⚠ موتور فقط با کلوز کندل‌ها تصمیم می‌گیرد (بدون ریپینت). کندل باز فقط پیش‌نمایش است.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+class Settings {
+    var tfMode: Int = 1
+    var tfS: Int = Tf.H1
+    var tfM: Int = Tf.M15
+    var tf1: Int = Tf.M5
+    var tf2: Int = Tf.M1
+
+    var vpRows: Int = 24
+    var vpVA: Double = 10.0
+    var vpSmooth: Int = 1
+    var distMode: Int = VolumeProfile.DIST_TRI_CLOSE
+    var minZoneRows: Int = 1
+    var drawZones: Boolean = true
+    var showRejectedZones: Boolean = true
+    var clearUsedZones: Boolean = true
+    var maxZoneBoxes: Int = 24
+    var showPocVA: Boolean = true
+
+    var maxSetups: Int = 6
+    var midInvalidClose: Boolean = true       // true=شکست با کلوز ، false=با سایه
+    var hvScanFirstTouch: Boolean = true      // true=از اولین برگشت به باکس ولوم کم
+    var hvMarkFirstIncrease: Boolean = true   // true=اولین افزایش حجم نسبت به کندل قبل ، false=RunningMax
+    var rejectCandleNext: Boolean = false
+
+    var mintick: Double = 0.01
+    var slBufTicks: Double = 2.0
+    var minTPunits: Double = 10.0
+
+    var useRiskPct: Boolean = true
+    var riskPct: Double = 1.0
+    var equityPct: Double = 100.0
+    var maxLeverage: Double = 1.0
+    var roundQty: Boolean = false
+    var maxBarsToFill: Int = 150
+    var contractSize: Double = 1.0
+    var initialEquity: Double = 10000.0
+
+    fun copy(): Settings = Settings().also {
+        it.tfMode = tfMode; it.tfS = tfS; it.tfM = tfM; it.tf1 = tf1; it.tf2 = tf2
+        it.vpRows = vpRows; it.vpVA = vpVA; it.vpSmooth = vpSmooth; it.distMode = distMode
+        it.minZoneRows = minZoneRows; it.drawZones = drawZones; it.showRejectedZones = showRejectedZones
+        it.clearUsedZones = clearUsedZones; it.maxZoneBoxes = maxZoneBoxes; it.showPocVA = showPocVA
+        it.maxSetups = maxSetups; it.midInvalidClose = midInvalidClose
+        it.hvScanFirstTouch = hvScanFirstTouch; it.hvMarkFirstIncrease = hvMarkFirstIncrease
+        it.rejectCandleNext = rejectCandleNext
+        it.mintick = mintick; it.slBufTicks = slBufTicks; it.minTPunits = minTPunits
+        it.useRiskPct = useRiskPct; it.riskPct = riskPct; it.equityPct = equityPct
+        it.maxLeverage = maxLeverage; it.roundQty = roundQty; it.maxBarsToFill = maxBarsToFill
+        it.contractSize = contractSize; it.initialEquity = initialEquity
+    }
+}
+
+class Counters {
+    var setup = 0; var touch = 0; var mid = 0; var lv = 0; var hv = 0; var entry = 0; var done = 0
+    var zoneCount = 0; var zoneRejected = 0
+}
+
+class Engine(val cfg: Settings) {
+
+    // ── وضعیت ──────────────────────────────────────────────────────────────────
+    val aggS = Agg(); val aggM = Agg(); val agg1 = Agg()
+    val structBars = ArrayList<Candle>()
+    val pins = ArrayList<Pin>()
+    val setups = ArrayList<Setup>()
+    val microS = ArrayList<Candle>()
+
+    val zones = ArrayList<ZoneBox>()          // همهٔ باکس‌ها با چرخهٔ عمر (برای ذخیره/بازیابی دقیق)
+    val markers = ArrayList<Marker>()         // برچسب‌های استراتژی روی چارت
+    val events = ArrayList<String>()          // گزارش رویدادها
+    val cnt = Counters()
+
+    var trend = 0
+    var HH = Double.NaN; var HL = Double.NaN; var LL = Double.NaN; var LH = Double.NaN
+    var seqStart = 0
+    var bullBU1Low = Double.NaN; var bullBEHigh = Double.NaN; var bullBU2Low = Double.NaN; var bullBU2Bi = -1
+    var bearBE1High = Double.NaN; var bearBULow = Double.NaN; var bearBE2High = Double.NaN; var bearBE2Bi = -1
+    var bullSetup = false; var bearSetup = false
+    var expectedReady = 0
+    var lowestBUpin = Double.NaN; var highestBE = Double.NaN
+    var lastBUpin = Double.NaN; var lastBEpin = Double.NaN
+
+    var lastZoneTop = Double.NaN; var lastZoneBot = Double.NaN
+    var lastPocPx = Double.NaN; var lastProfBars = 0
+    var profileOnLastS: Profile? = null
+
+    var lastEntryPx = Double.NaN; var lastSlPx = Double.NaN; var lastTpPx = Double.NaN
+    var lastResult = "-"
+    var stageFa = "-"
+
+    var prevT1Vol = Double.NaN
+    var zoneSeq = 0L
+    var setupSeq = 0L
+    var processed = 0
+    var curBi = -1
+    var curT = 0L
+    var curVol = 0.0
+    var prevChartVol = Double.NaN
+
+    // پیش‌نمایش زنده (کندل باز) — فقط برای نمایش، بدون تغییر وضعیت
+    val livePreview = ArrayList<String>()
+    var liveCandle: Candle? = null
+
+    var broker: PaperBroker? = null
+
+    /** قلاب همگام‌سازی: بعد از پردازش هر کندل بسته فراخوانی می‌شود (برای کارگزار کاغذی). */
+    var barCommitHook: ((Candle) -> Unit)? = null
+
+    val tf2: Int get() = cfg.tf2
+
+    fun reset() {
+        aggS.reset(); aggM.reset(); agg1.reset()
+        structBars.clear(); pins.clear(); setups.clear(); microS.clear()
+        zones.clear(); markers.clear(); events.clear()
+        trend = 0; HH = Double.NaN; HL = Double.NaN; LL = Double.NaN; LH = Double.NaN
+        seqStart = 0
+        bullBU1Low = Double.NaN; bullBEHigh = Double.NaN; bullBU2Low = Double.NaN; bullBU2Bi = -1
+        bearBE1High = Double.NaN; bearBULow = Double.NaN; bearBE2High = Double.NaN; bearBE2Bi = -1
+        bullSetup = false; bearSetup = false; expectedReady = 0
+        lowestBUpin = Double.NaN; highestBE = Double.NaN; lastBUpin = Double.NaN; lastBEpin = Double.NaN
+        lastZoneTop = Double.NaN; lastZoneBot = Double.NaN; lastPocPx = Double.NaN; lastProfBars = 0
+        profileOnLastS = null
+        lastEntryPx = Double.NaN; lastSlPx = Double.NaN; lastTpPx = Double.NaN
+        lastResult = "-"; stageFa = "-"
+        prevT1Vol = Double.NaN; zoneSeq = 0; setupSeq = 0
+        processed = 0; curBi = -1; curT = 0; curVol = 0.0; prevChartVol = Double.NaN
+        livePreview.clear(); liveCandle = null
+    }
+
+    // ── ورود داده ──────────────────────────────────────────────────────────────
+    /**
+     * پردازش لیست کندل‌های تایم‌فریم تریگر۲ (چارت).
+     * همهٔ کندل‌ها به‌جز آخری «بسته» در نظر گرفته می‌شوند؛ آخری فقط پیش‌نمایش زنده است.
+     */
+    fun feed(candles: List<Candle>, lastIsClosed: Boolean = false) {
+        if (candles.isEmpty()) return
+        val lastIdx = candles.size - 1
+        var i = processed
+        while (i <= lastIdx) {
+            val cd = candles[i]
+            val isLast = i == lastIdx
+            if (!isLast || lastIsClosed) {
+                processClosed(cd, i, candles.getOrNull(i - 1))
+                processed = i + 1
+            } else {
+                updateLive(cd, i, candles.getOrNull(i - 1))
+            }
+            i++
+        }
+    }
+
+    /** بارگذاری کامل از صفر (برای بک‌تست). همهٔ کندل‌ها بسته‌اند. */
+    fun runAll(candles: List<Candle>) {
+        reset()
+        feed(candles, lastIsClosed = true)
+    }
+
+    // ── پیش‌نمایش کندل باز (بدون تغییر وضعیت) ────────────────────────────────────
+    private fun updateLive(cd: Candle, i: Int, prev: Candle?) {
+        curBi = i; curT = cd.t; curVol = cd.v; liveCandle = cd
+        times[i] = cd.t
+        livePreview.clear()
+        prevChartVol = prev?.v ?: Double.NaN
+        aggStep(aggS, i, cd, Tf.isNewBarStart(tfS(), cd.t, prev?.t))
+        aggStep(aggM, i, cd, Tf.isNewBarStart(tfM(), cd.t, prev?.t))
+        aggStep(agg1, i, cd, Tf.isNewBarStart(tf1(), cd.t, prev?.t))
+        // وضعیت‌های در انتظار (فقط خواندنی)
+        for (s in setups) {
+            if (s.stage >= 1 && s.stage <= 6 && !s.zGone) {
+                val d = if (s.dir == 1) "صعودی" else "نزولی"
+                livePreview.add("ستاپ #${s.id} $d · مرحله: ${stageFa(s.stage)}")
+            }
+        }
+        // آیا کندل جاری در حال مارک شدن به‌عنوان کندل ولوم زیاد است؟
+        for (s in setups) {
+            if (s.stage >= 4 && s.stage <= 5 && s.lvReEntered && s.hvBi < 0) {
+                val inc = cd.v > (prev?.v ?: 0.0)
+                if (inc) livePreview.add("کندل ولوم زیاد در حال مارک (حجم ${fmtV(cd.v)} > قبلی)")
+            }
+        }
+    }
+
+    private fun tfS() = cfg.tfS
+    private fun tfM() = cfg.tfM
+    private fun tf1() = cfg.tf1
+
+    private fun aggStep(a: Agg, i: Int, cd: Candle, isNew: Boolean) {
+        a.step(isNew, i, cd.t, cd.o, cd.h, cd.l, cd.c, cd.v)
+    }
+
+    // ── پردازش کندل بسته ───────────────────────────────────────────────────────
+    private fun processClosed(cd: Candle, i: Int, prev: Candle?) {
+        curBi = i; curT = cd.t; curVol = cd.v
+        times[i] = cd.t
+        if (times.size > 200000) times.clear()
+        val isNewS = Tf.isNewBarStart(tfS(), cd.t, prev?.t)
+        val isNewM = Tf.isNewBarStart(tfM(), cd.t, prev?.t)
+        val isNew1 = Tf.isNewBarStart(tf1(), cd.t, prev?.t)
+
+        aggStep(aggS, i, cd, isNewS)
+        aggStep(aggM, i, cd, isNewM)
+        aggStep(agg1, i, cd, isNew1)
+
+        // ترتیب دقیقاً مثل Pine: ساختار → میانی → تریگر۱ → تریگر۲
+        if (aggS.closedNow) aggS.cl?.let { structureEngine(it) }
+        if (aggM.closedNow) middleEngine(aggM.cl!!)
+        if (agg1.closedNow) trigger1Engine(agg1.cl!!)
+        trigger2Engine(cd)
+
+        // ریزکندل‌های تریگر۲ داخل کندل ساختار جاری
+        if (isNewS) microS.clear()
+        if (microS.size > 3000) microS.removeAt(0)
+        microS.add(cd)
+
+        // چرخهٔ عمر باکس‌های ناحیه (حذف با کلوز از سمت دور)
+        if (cfg.clearUsedZones) {
+            for (zb in zones) {
+                if (zb.status != ZoneStatus.ACTIVE) continue
+                val dead = if (zb.dir == 1) cd.c < zb.bot else cd.c > zb.top
+                if (dead) {
+                    zb.status = ZoneStatus.DELETED
+                    zb.endBi = i; zb.endT = cd.t
+                }
+            }
+        }
+        // سقف تعداد باکس
+        while (zones.size > cfg.maxZoneBoxes) {
+            val first = zones.firstOrNull { it.status == ZoneStatus.ACTIVE || it.status == ZoneStatus.REJECTED }
+                ?: zones.firstOrNull() ?: break
+            first.status = ZoneStatus.CAP
+            break
+        }
+        if (agg1.closedNow && agg1.cl != null) prevT1Vol = agg1.cl!!.v
+        prevChartVol = cd.v
+        cnt.zoneCount = zones.size
+        barCommitHook?.invoke(cd)
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  ⑩ موتور ساختار (کندل مهم · Ready · pin · روند · ناحیه فیکس‌رنج)
+    // ═══════════════════════════════════════════════════════════════════════════
+    private fun structureEngine(sb: Candle) {
+        structBars.add(sb)
+        while (structBars.size > 400) structBars.removeAt(0)
+        val nS = structBars.size
+
+        // ── تشخیص جفت‌کندل‌ها و ثبت کاندید کندل مهم ──
+        if (nS >= 2) {
+            val a = structBars[nS - 2]
+            val b = structBars[nS - 1]
+            if (a.c < a.o && b.c > b.o) {                       // کندل مهم در پایین‌ترین‌ها
+                val (impH, impL, impBi) = pickLow(a, b)
+                val refLo = min(a.c, b.o)
+                pins.add(Pin(1, impH, impL, impBi, b.bi, refLo, 0))
+            }
+            if (a.c > a.o && b.c < b.o) {                       // کندل مهم در بالاترین‌ها
+                val (impH2, impL2, impBi2) = pickHigh(a, b)
+                val refHi = max(a.c, b.o)
+                pins.add(Pin(-1, impH2, impL2, impBi2, b.bi, refHi, 0))
+            }
+        }
+
+        // ── چرخهٔ عمر کاندیدها : ابطال / Ready ──
+        for (p in pins) {
+            if (p.status == 0 && sb.bi > p.startBi) {
+                val dead = if (p.kind == 1) (sb.o <= p.ref || sb.c <= p.ref)
+                else (sb.o >= p.ref || sb.c >= p.ref)
+                if (dead) p.status = -1
+                else {
+                    val rdy = if (p.kind == 1) sb.c > p.hi else sb.c < p.lo
+                    if (rdy) p.status = 1
+                }
+            }
+        }
+
+        // ── انتخاب Ready با تناوب سخت BU↔BE ──
+        if (pins.isNotEmpty()) {
+            if (expectedReady == 0 || expectedReady == 1) {
+                val iBU = bestReady(pins, 1)
+                if (iBU >= 0) {
+                    val pBU = pins[iBU]
+                    if (!hasBetterActive(pins, 1, pBU.lo)) {
+                        lastBUpin = pBU.lo
+                        lowestBUpin = if (lowestBUpin.isNaN()) pBU.lo else min(lowestBUpin, pBU.lo)
+                        addMarker(pBU.impBi, pBU.lo, 1, "کندل مهم پایین‌ترین\nReady BU · pinBU")
+                        when (trend) {
+                            0 -> {
+                                if (seqStart == 0) {
+                                    seqStart = 1; bullBU1Low = pBU.lo
+                                    bullBEHigh = Double.NaN; bullBU2Low = Double.NaN; bullSetup = false
+                                } else if (seqStart == -1) {
+                                    bearBULow = pBU.lo
+                                } else if (seqStart == 1 && !bullBEHigh.isNaN()) {
+                                    if (pBU.lo > bullBU1Low && !bullSetup) {
+                                        bullBU2Low = pBU.lo; bullBU2Bi = sb.bi; bullSetup = true
+                                    }
+                                }
+                            }
+                            1 -> HL = pBU.lo
+                        }
+                        expectedReady = -1
+                        pins.clear()
+                    }
+                }
+            }
+            if ((expectedReady == 0 || expectedReady == -1) && pins.isNotEmpty()) {
+                val iBE = bestReady(pins, -1)
+                if (iBE >= 0) {
+                    val pBE = pins[iBE]
+                    if (!hasBetterActive(pins, -1, pBE.hi)) {
+                        lastBEpin = pBE.hi
+                        highestBE = if (highestBE.isNaN()) pBE.hi else max(highestBE, pBE.hi)
+                        addMarker(pBE.impBi, pBE.hi, -1, "کندل مهم بالاترین\nReady BE · pinBE")
+                        when (trend) {
+                            0 -> {
+                                if (seqStart == 0) {
+                                    seqStart = -1; bearBE1High = pBE.hi
+                                    bearBULow = Double.NaN; bearBE2High = Double.NaN; bearSetup = false
+                                } else if (seqStart == 1) {
+                                    if (bullBEHigh.isNaN()) bullBEHigh = pBE.hi
+                                } else if (seqStart == -1 && !bearBULow.isNaN()) {
+                                    if (pBE.hi < bearBE1High && !bearSetup) {
+                                        bearBE2High = pBE.hi; bearBE2Bi = sb.bi; bearSetup = true
+                                    }
+                                }
+                            }
+                            -1 -> LH = pBE.hi
+                        }
+                        expectedReady = 1
+                        pins.clear()
+                    }
+                }
+            }
+        }
+
+        // ── تعیین / ادامه / تغییر روند (فقط با کلوز کندل ساختار) ──
+        var evTrendUp = false; var evTrendDn = false
+        var evChgUp = false; var evChgDn = false
+        when (trend) {
+            0 -> {
+                if (bullSetup && !bullBEHigh.isNaN() && sb.c > bullBEHigh && sb.bi > bullBU2Bi) {
+                    trend = 1; HH = bullBEHigh; HL = bullBU2Low
+                    bullSetup = false; bearSetup = false; evTrendUp = true
+                } else if (bearSetup && !bearBULow.isNaN() && sb.c < bearBULow && sb.bi > bearBE2Bi) {
+                    trend = -1; LL = bearBULow; LH = bearBE2High
+                    bullSetup = false; bearSetup = false; evTrendDn = true
+                }
+            }
+            1 -> {
+                if (sb.c > HH) HH = sb.c
+                else if (sb.c < HL) { trend = -1; LL = sb.c; LH = HH; evChgDn = true }
+            }
+            -1 -> {
+                if (sb.c < LL) LL = sb.c
+                else if (sb.c > LH) { trend = 1; HH = sb.c; HL = LL; evChgUp = true }
+            }
+        }
+        if (evChgDn || evTrendDn) cancelDir(1)
+        if (evChgUp || evTrendUp) cancelDir(-1)
+
+        // ── پروفایل حجم فیکس‌رنج + ثبت ناحیه‌ها ──
+        val bullC = sb.c > sb.o
+        val bearC = sb.c < sb.o
+        val dirOK = (trend == 1 && bullC) || (trend == -1 && bearC)
+        val prof = VolumeProfile.build(microS, cfg.vpRows, cfg.vpVA, cfg.distMode, cfg.vpSmooth, cfg.mintick)
+        profileOnLastS = prof
+        lastProfBars = microS.size
+        if (cfg.showPocVA && !prof.poc.isNaN()) lastPocPx = prof.poc
+        if (dirOK && !prof.step.isNaN() && prof.step > 0) {
+            val rej = VolumeProfile.zones(prof, cfg.vpRows, bullC, sb.c, cfg.minZoneRows, wantRejected = true)
+            cnt.zoneRejected += rej.size
+            if (cfg.showRejectedZones) for (rz in rej) addZoneBox(trend, rz, sb, ZoneStatus.REJECTED)
+            val zs = VolumeProfile.zones(prof, cfg.vpRows, bullC, sb.c, cfg.minZoneRows)
+            for (z in zs) {
+                if (z.top > z.bot) {
+                    addZoneBox(trend, z, sb, ZoneStatus.ACTIVE)
+                    lastZoneTop = z.top; lastZoneBot = z.bot
+                    cnt.setup++
+                    val st = Setup(setupSeq++, trend, 0, z.top, z.bot, z.idx, sb.bi)
+                    st.note = "ثبت شد"
+                    setups.add(st)
+                }
+            }
+            pruneSetups()
+            trimZones()
+        }
+    }
+
+    private fun pruneSetups() {
+        while (setups.size > cfg.maxSetups) {
+            var pick = setups.indexOfFirst { it.stage == 8 }
+            if (pick < 0) pick = 0
+            val s = setups.removeAt(pick)
+            if (s.stage < 7) events.add("[${s.id}] پروندهٔ ستاپ بسته شد (سقف ستاپ‌های هم‌زمان)")
+        }
+    }
+
+    private fun trimZones() {
+        // قدیمی‌ترین باکس (فعال/ردشده) تا وقتی که تعداد از سقف بگذرد حذف می‌شود
+        while (zones.count { it.status == ZoneStatus.ACTIVE || it.status == ZoneStatus.REJECTED } > cfg.maxZoneBoxes) {
+            val victim = zones.firstOrNull { it.status == ZoneStatus.ACTIVE || it.status == ZoneStatus.REJECTED } ?: break
+            victim.status = ZoneStatus.CAP
+        }
+    }
+
+    private fun addZoneBox(dir: Int, z: Zone, sb: Candle, status: Int) {
+        zones.add(ZoneBox(zoneSeq++, dir, z.idx, z.top, z.bot, sb.bi, sb.t, z.loIdx, z.hiIdx, sb.bi, sb.t, status))
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  ⑪ موتور میانی (تایید میانی · کندل مارک‌شده · ابطال)
+    // ═══════════════════════════════════════════════════════════════════════════
+    private fun middleEngine(mc: Candle) {
+        for (s in setups) {
+            if (s.stage < 1 || s.stage >= 7) continue
+            if (s.midRef.isNaN() && mc.t == s.touchMidStart) {
+                // ✔ تایید میانی
+                s.midRef = if (s.dir == 1) mc.l else mc.h
+                s.midBi = mc.bi
+                s.midConfirmBi = curBi
+                s.markBi = -1; s.markH = Double.NaN; s.markL = Double.NaN
+                s.stage = 2
+                cnt.mid++
+                s.lvReEntered = false
+                addMarker(mc.bi, s.midRef, 3, if (s.dir == 1) "کف تایید میانی" else "سقف تایید میانی")
+            } else if (!s.midRef.isNaN() && s.markBi < 0) {
+                // ◆ مارک کردن کندل بعد از تایید (فقط نشانه)
+                s.markH = mc.h; s.markL = mc.l; s.markBi = mc.bi
+                if (s.stage == 2) s.stage = 3
+            } else if (!s.midRef.isNaN()) {
+                // ✖ ابطال تایید میانی
+                val broken = if (cfg.midInvalidClose) {
+                    if (s.dir == 1) mc.c < s.midRef else mc.c > s.midRef
+                } else {
+                    if (s.dir == 1) mc.l < s.midRef else mc.h > s.midRef
+                }
+                if (broken) {
+                    val old = s.midRef
+                    s.midRef = Double.NaN; s.midBi = -1; s.markBi = -1
+                    s.touchMidStart = aggM.cur?.t ?: mc.t
+                    s.stage = 2
+                    s.lvBi = -1; s.lvConfBi = -1; s.hvBi = -1; s.hvScanBi = -1; s.runMax = Double.NaN
+                    s.lvTouched = false; s.lvUsed = false
+                    addMarker(mc.bi, old, 10, "تایید میانی باطل شد")
+                }
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  ⑫ موتور تریگر ۱ · ناحیهٔ ولوم کم (یک‌بارمصرف)
+    // ═══════════════════════════════════════════════════════════════════════════
+    private fun trigger1Engine(q1: Candle) {
+        for (s in setups) {
+            if (s.stage < 2 || s.stage > 6 || s.midRef.isNaN() || q1.bi <= s.midConfirmBi) continue
+            val bullL = s.dir == 1
+
+            // ── مارک / تایید کندل ولوم کم ──
+            if (!s.lvUsed && s.stage <= 4) {
+                if (s.lvBi < 0) {
+                    if (prevT1Vol.isNaN() || q1.v < prevT1Vol) {
+                        s.lvBi = q1.bi; s.lvH = q1.h; s.lvL = q1.l
+                        addMarker(q1.bi, if (bullL) q1.l else q1.h, 4, "کندل ولوم کم (تریگر۱)")
+                    }
+                } else {
+                    val violL = if (bullL) q1.l <= s.lvL else q1.h >= s.lvH
+                    val confL = if (bullL) q1.c > s.lvH else q1.c < s.lvL
+                    if (violL) {
+                        s.lvBi = -1
+                    } else if (confL) {
+                        s.lvConfBi = curBi
+                        s.stage = 4
+                        cnt.lv++
+                        s.lvTouched = false
+                        s.lvReEntered = false
+                        s.hvScanBi = -1
+                        s.hvBi = -1
+                        if (!cfg.hvScanFirstTouch) s.hvScanBi = curBi
+                        addMarker(q1.bi, if (bullL) s.lvH else s.lvL, 5, "ناحیهٔ ولوم کم ✔ (تریگر۱)")
+                    }
+                }
+            }
+
+            // ── یک‌بارمصرف بودن باکس ولوم کم ──
+            if (s.lvBi >= 0 && !s.lvUsed && s.stage in 4..6) {
+                val inside = q1.l <= s.lvH && q1.h >= s.lvL
+                if (inside && !s.lvTouched) {
+                    s.lvTouched = true
+                    if (s.hvScanBi < 0 && cfg.hvScanFirstTouch) s.hvScanBi = q1.bi
+                } else if (s.lvTouched && !inside) {
+                    val left = if (bullL) q1.c > s.lvH else q1.c < s.lvL
+                    if (left) {
+                        s.lvUsed = true
+                        addMarker(q1.bi, if (bullL) s.lvH else s.lvL, 11, "باکس ولوم کم مصرف شد ✖")
+                        if (s.stage == 4 || s.stage == 5) {
+                            s.stage = 8
+                            s.note = "باکس ولوم کم مصرف شد (یک‌بار)"
+                            events.add("[${s.id}] باکس ولوم کم بدون معامله مصرف شد")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    //  ⑬ موتور تریگر ۲ (چارت) : ناحیهٔ ساختار · ناحیهٔ ولوم زیاد · ورود · مدیریت
+    // ═══════════════════════════════════════════════════════════════════════════
+    private fun trigger2Engine(cd: Candle) {
+        val low = cd.l; val high = cd.h; val close = cd.c; val volume = cd.v
+        for (s in setups) {
+            val bull = s.dir == 1
+
+            // ① برخورد به ناحیهٔ فیکس‌رنج ساختار
+            if (s.stage == 0 && !s.zGone && curBi > s.zBi) {
+                if (low <= s.zTop && high >= s.zBot) {
+                    s.stage = 1
+                    cnt.touch++
+                    s.touchBi = curBi
+                    s.touchMidStart = aggM.cur?.t ?: cd.t
+                    addMarker(curBi, if (bull) s.zBot else s.zTop, 2, "برخورد · منتظر بسته شدن کندل میانی")
+                }
+            }
+
+            // ② پاک شدن / لغو ناحیهٔ ساختار (کلوز از سمت دور)
+            if (s.stage < 7 && !s.zGone && curBi > s.zBi) {
+                val broken = if (bull) close < s.zBot else close > s.zTop
+                if (broken) {
+                    s.zGone = true
+                    s.stage = 8
+                    s.note = "شکست ناحیهٔ ساختار (لغو)"
+                    events.add("[${s.id}] لغو شد — شکست ناحیهٔ ساختار")
+                    addMarker(curBi, close, 10, "لغو · شکست ناحیهٔ ساختار")
+                }
+            }
+
+            // ③-الف بازگشت قیمت به باکس ولوم کم ← شروع اسکن ولوم زیاد
+            if (s.stage == 4 && !s.zGone && s.lvBi >= 0 && !s.lvReEntered) {
+                if (low <= s.lvH && high >= s.lvL) {
+                    s.lvReEntered = true
+                    if (s.hvScanBi < 0) s.hvScanBi = curBi
+                    s.runMax = volume
+                    addMarker(curBi, if (bull) s.lvH else s.lvL, 5, "بازگشت به باکس ولوم کم · اسکن ولوم زیاد")
+                }
+            }
+
+            // ③-ب ناحیهٔ ولوم زیاد (تریگر ۲)
+            if (s.stage in 4..5 && s.lvBi >= 0 && s.lvReEntered) {
+                val scanOK = if (s.hvScanBi < 0) true else curBi >= s.hvScanBi
+                if (scanOK) {
+                    val marked = s.hvBi >= 0
+                    val viol = marked && (if (bull) low <= s.hvL else high >= s.hvH)
+                    val conf = marked && (if (bull) close > s.hvH else close < s.hvL)
+                    if (viol) {
+                        s.hvBi = -1; s.runMax = volume; s.stage = 4
+                    } else if (conf) {
+                        armSetup(s, cd, bull)
+                    } else {
+                        val markNow = if (cfg.hvMarkFirstIncrease) {
+                            s.hvBi < 0 && volume > (prevChartVol.takeIf { !it.isNaN() } ?: Double.NEGATIVE_INFINITY)
+                        } else {
+                            volume > (s.runMax.takeIf { !it.isNaN() } ?: Double.NEGATIVE_INFINITY)
+                        }
+                        if (markNow) {
+                            s.hvBi = curBi; s.hvH = high; s.hvL = low
+                            s.runMax = volume; s.stage = 5
+                            addMarker(curBi, if (bull) low else high, 6, "کندل ولوم زیاد (مارک)")
+                        }
+                    }
+                }
+            }
+
+            // ④ ورود : برگشت به ناحیهٔ ولوم زیاد (پر شدن سفارش لیمیت)
+            if (s.stage == 6 && curBi > s.hvConfBi) {
+                if (if (bull) close < s.hvL else close > s.hvH) {
+                    s.hvBi = -1; s.runMax = volume; s.stage = 4
+                    broker?.onSetupInvalidated(s)
+                } else if (if (bull) low <= s.hvH else high >= s.hvL) {
+                    s.entry = if (bull) s.hvH else s.hvL
+                    s.stage = 7
+                    cnt.entry++
+                    lastEntryPx = s.entry; lastSlPx = s.sl; lastTpPx = s.tpx
+                    addMarker(curBi, s.entry, 8, (if (bull) "ورود خرید" else "ورود فروش") + " @ " + f2(s.entry))
+                }
+            }
+
+            // ⑤ مدیریت معامله : حدضرر / سر‌به‌سر / حدسود (بررسی موتور)
+            if (s.stage == 7 && !s.sl.isNaN() && !s.tpx.isNaN()) {
+                var done = false
+                var px = Double.NaN
+                var note = ""
+                if (bull) {
+                    if (low <= s.sl) { done = true; px = s.sl; note = if (s.be) "خروج سر‌به‌سر" else "حد ضرر" }
+                    else if (high >= s.tpx) { done = true; px = s.tpx; note = "حد سود نهایی (1.272)" }
+                    else if (!s.be && !s.tp1.isNaN() && high >= s.tp1) {
+                        s.be = true; s.sl = s.entry
+                        addMarker(curBi, s.entry, 8, "TP1 (38%) ✔ · حدضرر = سر‌به‌سر")
+                    } else if (s.be && low <= s.entry) { done = true; px = s.entry; note = "خروج سر‌به‌سر" }
+                } else {
+                    if (high >= s.sl) { done = true; px = s.sl; note = if (s.be) "خروج سر‌به‌سر" else "حد ضرر" }
+                    else if (low <= s.tpx) { done = true; px = s.tpx; note = "حد سود نهایی (1.272)" }
+                    else if (!s.be && !s.tp1.isNaN() && low <= s.tp1) {
+                        s.be = true; s.sl = s.entry
+                        addMarker(curBi, s.entry, 8, "TP1 (38%) ✔ · حدضرر = سر‌به‌سر")
+                    } else if (s.be && high >= s.entry) { done = true; px = s.entry; note = "خروج سر‌به‌سر" }
+                }
+                if (done) {
+                    s.stage = 8
+                    cnt.done++
+                    lastResult = note
+                    s.note = note
+                    addMarker(curBi, px, 9, note + " @ " + f2(px))
+                }
+            }
+        }
+        // وضعیت کلی برای پنل
+        stageFa = setups.minByOrNull { it.stage }?.let { stageFa(it.stage) } ?: "-"
+    }
+
+    /** لحظهٔ مسلح شدن (تایید ناحیهٔ ولوم زیاد) → محاسبهٔ SL/TP و ثبت سفارش ورود. */
+    private fun armSetup(s: Setup, cd: Candle, bull: Boolean) {
+        val eRef = if (bull) s.hvH else s.hvL
+        s.sl = if (bull) s.hvL - cfg.slBufTicks * cfg.mintick else s.hvH + cfg.slBufTicks * cfg.mintick
+        val a0 = if (bull) highestBE else lowestBUpin
+        val a1 = s.midRef
+        val haveFib = !a0.isNaN() && !a1.isNaN() && (if (bull) a0 > a1 else a0 < a1)
+        if (haveFib) {
+            val r = if (bull) a0 - a1 else a1 - a0
+            s.tp1 = if (bull) a1 + 0.382 * r else a1 - 0.382 * r
+            s.tp2 = if (bull) a1 + 0.5 * r else a1 - 0.5 * r
+            s.tpx = if (bull) a1 + 1.272 * r else a1 - 1.272 * r
+        } else {
+            s.tpx = if (bull) eRef + cfg.minTPunits else eRef - cfg.minTPunits
+            s.tp1 = Double.NaN; s.tp2 = Double.NaN
+        }
+        if (bull) {
+            if (s.tpx - eRef < cfg.minTPunits) s.tpx = eRef + cfg.minTPunits
+            if (s.tp1.isNaN() || s.tp1 <= eRef) s.tp1 = eRef + (s.tpx - eRef) * 0.382
+            if (s.tp2.isNaN() || s.tp2 <= eRef) s.tp2 = eRef + (s.tpx - eRef) * 0.5
+        } else {
+            if (eRef - s.tpx < cfg.minTPunits) s.tpx = eRef - cfg.minTPunits
+            if (s.tp1.isNaN() || s.tp1 >= eRef) s.tp1 = eRef - (eRef - s.tpx) * 0.382
+            if (s.tp2.isNaN() || s.tp2 >= eRef) s.tp2 = eRef - (eRef - s.tpx) * 0.5
+        }
+        s.stage = 6
+        cnt.hv++
+        s.hvConfBi = curBi
+        s.entry = eRef
+        addMarker(curBi, eRef, 7, if (bull) "مسلح برای خرید (Armed)" else "مسلح برای فروش (Armed)")
+        events.add("[${s.id}] مسلح شد · ورود ${f2(eRef)} · SL ${f2(s.sl)} · TP ${f2(s.tpx)}")
+        broker?.registerLimit(s, cd)
+    }
+
+    // ── ابزارها ────────────────────────────────────────────────────────────────
+    private fun bestReady(ps: List<Pin>, kind: Int): Int {
+        var idx = -1
+        var best = Double.NaN
+        for (i in ps.indices) {
+            val p = ps[i]
+            if (p.status == 1 && p.kind == kind) {
+                val lv = if (kind == 1) p.lo else p.hi
+                if (best.isNaN() || (if (kind == 1) lv < best else lv > best)) { best = lv; idx = i }
+            }
+        }
+        return idx
+    }
+
+    private fun hasBetterActive(ps: List<Pin>, kind: Int, readyLevel: Double): Boolean {
+        for (p in ps) {
+            if (p.status == 0 && p.kind == kind) {
+                val lv = if (kind == 1) p.lo else p.hi
+                if (if (kind == 1) lv < readyLevel else lv > readyLevel) return true
+            }
+        }
+        return false
+    }
+
+    private fun pickLow(a: Candle, b: Candle): Triple<Double, Double, Int> =
+        if (a.l < b.l || (a.l == b.l && a.h < b.h)) Triple(a.h, a.l, a.bi) else Triple(b.h, b.l, b.bi)
+
+    private fun pickHigh(a: Candle, b: Candle): Triple<Double, Double, Int> =
+        if (a.h > b.h || (a.h == b.h && a.l > b.l)) Triple(a.h, a.l, a.bi) else Triple(b.h, b.l, b.bi)
+
+    private fun cancelDir(dir: Int) {
+        val it = setups.iterator()
+        while (it.hasNext()) {
+            val s = it.next()
+            if (s.dir == dir && s.stage < 7) {
+                s.stage = 8
+                s.note = "لغو (تغییر روند)"
+                events.add("[${s.id}] لغو شد — تغییر روند")
+                broker?.onSetupInvalidated(s)
+                it.remove()
+            }
+        }
+    }
+
+    private fun addMarker(bi: Int, price: Double, kind: Int, text: String) {
+        val t = times[bi] ?: curT
+        markers.add(Marker(t, bi, price, kind, text))
+        while (markers.size > 2000) markers.removeAt(0)
+    }
+
+    /** نگاشت ایندکس کندل → زمان (برای برچسب‌ها و ذخیره‌سازی). */
+    private val times = HashMap<Int, Long>()
+
+    fun stageFa(st: Int): String = when (st) {
+        0 -> "منتظر برخورد به ناحیهٔ ساختار"
+        1 -> "برخورد شد · منتظر بسته شدن کندل میانی"
+        2 -> "تایید میانی ✔"
+        3 -> "اسکن ناحیهٔ ولوم کم (تریگر۱)"
+        4 -> "ولوم کم ✔ · اسکن ولوم زیاد (تریگر۲)"
+        5 -> "کندل ولوم زیاد (تریگر۲) مارک شد"
+        6 -> "مسلح (Armed) · منتظر برگشت به ناحیهٔ ولوم زیاد"
+        7 -> "در معامله"
+        else -> "پایان‌یافته"
+    }
+
+    companion object {
+        fun fmtV(v: Double): String = if (v >= 1000) String.format("%.1fk", v / 1000) else String.format("%.0f", v)
+        fun f2(v: Double): String = String.format("%.2f", v)
+    }
+}
+
+/** ستاپ — معادل ساختار Setup در Pine. */
+class Setup(
+    val id: Long,
+    val dir: Int,
+    var stage: Int,
+    var zTop: Double,
+    var zBot: Double,
+    var zIdx: Int,
+    var zBi: Int
+) {
+    var touchBi = -1
+    var touchMidStart = 0L
+    var midRef = Double.NaN
+    var midBi = -1
+    var markH = Double.NaN; var markL = Double.NaN; var markBi = -1
+    var lvH = Double.NaN; var lvL = Double.NaN; var lvBi = -1; var lvConfBi = -1
+    var hvH = Double.NaN; var hvL = Double.NaN; var hvBi = -1; var hvScanBi = -1; var hvConfBi = -1
+    var midConfirmBi = -1
+    var runMax = Double.NaN
+    var zGone = false
+    var lvTouched = false
+    var lvUsed = false
+    var lvReEntered = false
+    var entry = Double.NaN
+    var sl = Double.NaN
+    var tp1 = Double.NaN
+    var tp2 = Double.NaN
+    var tpx = Double.NaN
+    var be = false
+    var note = ""
+    var orderId = -1L
+    val bull: Boolean get() = dir == 1
+}

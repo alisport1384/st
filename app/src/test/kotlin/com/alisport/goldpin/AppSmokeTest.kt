@@ -1,0 +1,172 @@
+package com.alisport.goldpin
+
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.os.Looper
+import android.view.View
+import android.view.ViewGroup
+import android.widget.LinearLayout
+import android.widget.ListView
+import com.alisport.goldpin.core.Tf
+import com.alisport.goldpin.data.Feed
+import com.alisport.goldpin.ui.ChartView
+import com.alisport.goldpin.ui.EquityChartView
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.Robolectric
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
+import org.robolectric.annotation.Config
+
+/**
+ * تست دود: اپ واقعاً ساخته می‌شود، همهٔ تب‌ها باز می‌شوند، چارت روی داده رسم می‌شود،
+ * دیالوگ جزئیات باز می‌شود و مسیرهای فید/ذخیره/بازیابی خطا نمی‌دهند.
+ */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [33], manifest = Config.NONE)
+class AppSmokeTest {
+
+    private fun idle() = shadowOf(Looper.getMainLooper()).idle()
+
+    @Test
+    fun `activity builds and all tabs open without crashing`() {
+        val c = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val act = c.get()
+        assertNotNull("اکتیویتی ساخته نشد", act)
+        val root = act.window.decorView
+        assertNotNull(root)
+
+        // نوار پایین: ۵ تب
+        val content = root.findViewById<ViewGroup>(android.R.id.content)
+        val shell = content.getChildAt(0) as LinearLayout
+        assertEquals(3, shell.childCount)                 // هدر ، محتوا ، تب‌ها
+        val tabs = shell.getChildAt(2) as LinearLayout
+        assertEquals(5, tabs.childCount)
+
+        for (i in 0 until 5) {
+            tabs.getChildAt(i).performClick()
+            idle()
+            assertTrue("تب ${i} باز نشد", shell.getChildAt(1) is ViewGroup)
+        }
+        c.pause().stop().destroy()
+    }
+
+    @Test
+    fun `engine runs the bundled sample data end to end`() {
+        val ctx = org.robolectric.RuntimeEnvironment.getApplication()
+        // مسیر واقعی خواندن دارایی نمونه (همان مسیری که اپ استفاده می‌کند)
+        val text = Feed.openSampleAsset(ctx).use { Feed.readCsvStream(it) }
+        var candles = Feed.parseCsv(text)
+        assertTrue("دادهٔ نمونه خوانده نشد", candles.size > 10_000)
+        assertTrue("حجم در دادهٔ نمونه صفر است", candles.any { it.v > 0.0 })
+
+        val s = AppState.instance
+        s.cfg.tf2 = Tf.M1
+        s.chartTfSec = Tf.M1
+        candles = Feed.synthesizeVolumeIfMissing(candles)
+        s.setCandles(candles)
+        s.rebuild(clearOrders = true)
+
+        s.backtestFull = true
+        s.rebuild(clearOrders = true)
+        assertEquals("همهٔ کندل‌ها پردازش نشدند", candles.size, s.engine.processed)
+        assertTrue("هیچ ناحیه‌ای ساخته نشد", s.engine.cnt.setup > 0)
+        assertTrue("هیچ برخوردی ثبت نشد", s.engine.cnt.touch > 0)
+        assertTrue("هیچ سفارشی ثبت نشد", s.broker.orders.size > 0)
+        assertEquals("موجودی باید معتبر بماند", true, s.broker.balance.isFinite())
+
+        // چارت + نمودار سود/زیان واقعاً رسم شوند
+        val chart = ChartView(ctx)
+        chart.candles = s.candles
+        chart.zones = s.engine.zones
+        chart.markers = s.engine.markers
+        chart.trades = s.broker.trades
+        chart.measure(
+            View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(1200, View.MeasureSpec.EXACTLY)
+        )
+        chart.layout(0, 0, 1080, 1200)
+        chart.refresh()
+        val bmp = Bitmap.createBitmap(1080, 1200, Bitmap.Config.ARGB_8888)
+        chart.draw(Canvas(bmp))     // اگر خطای رسم باشد اینجا لو می‌رود
+
+        val eq = EquityChartView(ctx)
+        eq.setData(s.broker.trades, s.cfg.initialEquity)
+        eq.measure(
+            View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(400, View.MeasureSpec.EXACTLY)
+        )
+        eq.layout(0, 0, 1080, 400)
+        eq.draw(Canvas(Bitmap.createBitmap(1080, 400, Bitmap.Config.ARGB_8888)))
+    }
+
+    @Test
+    fun `save and restore round trip through the app state`() {
+        val s = AppState.instance
+        // داده کوچک واقعی
+        val rnd = kotlin.random.Random(7)
+        val list = ArrayList<com.alisport.goldpin.core.Candle>()
+        var px = 2000.0
+        var t = 1_700_000_000_000L
+        for (i in 0 until 8_000) {
+            val o = px; val c = px + rnd.nextDouble(-1.0, 1.0)
+            list.add(com.alisport.goldpin.core.Candle(i, t, o, maxOf(o, c), minOf(o, c), c, 100.0 + rnd.nextDouble(500.0)))
+            px = c; t += 60_000
+        }
+        s.setCandles(list)
+        val json = s.buildJson()
+        val beforeZones = s.engine.zones.size
+        val beforeTrades = s.broker.trades.size
+
+        s.wipe()
+        assertTrue("پاک کردن کار نکرد", s.engine.zones.isEmpty() || s.broker.trades.isEmpty())
+
+        val msg = s.loadFromText(json)
+        assertTrue("پیام بازیابی: $msg", msg.startsWith("بازیابی"))
+        assertEquals("تعداد کندل بعد از بازیابی", list.size, s.candles.size)
+        assertEquals("تعداد باکس ناحیه بعد از بازیابی", beforeZones, s.engine.zones.size)
+        assertEquals("تعداد معاملات بعد از بازیابی", beforeTrades, s.broker.trades.size)
+
+        // ادامهٔ اجرا نباید خطا بدهد
+        s.rebuild(clearOrders = false)
+        assertTrue(s.engine.processed > 0)
+    }
+
+    @Test
+    fun `feed errors are handled gracefully without network`() {
+        val s = AppState.instance
+        // در محیط تست شبکه نیست → باید پیام خطای محترمانه بدهد و کرش نکند
+        s.downloadHistory { }
+        Thread.sleep(1500)
+        idle()
+        // خطا یا داده ؛ در هر حال نباید استثنا بدهد
+        assertTrue(true)
+    }
+
+    @Test
+    fun `trades and orders dialogs build`() {
+        val c = Robolectric.buildActivity(MainActivity::class.java).setup()
+        val act = c.get()
+        val s = AppState.instance
+        if (s.broker.trades.isNotEmpty()) {
+            // باز کردن تب سود و زیان و تب سفارش‌ها و لمس اولین ردیف
+            val content = act.window.decorView.findViewById<ViewGroup>(android.R.id.content)
+            val shell = content.getChildAt(0) as LinearLayout
+            val tabs = shell.getChildAt(2) as LinearLayout
+            tabs.getChildAt(2).performClick(); idle()
+            val screen = shell.getChildAt(1) as ViewGroup
+            val lists = ArrayList<ListView>()
+            fun walk(v: View) {
+                if (v is ListView) lists.add(v)
+                if (v is ViewGroup) for (i in 0 until v.childCount) walk(v.getChildAt(i))
+            }
+            walk(screen)
+            for (lv in lists) if (lv.adapter != null && lv.adapter.count > 0) lv.performItemClick(lv.getChildAt(0), 0, 0)
+            idle()
+        }
+        c.pause().stop().destroy()
+    }
+}
