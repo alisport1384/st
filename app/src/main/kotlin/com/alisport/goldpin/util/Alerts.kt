@@ -209,9 +209,17 @@ object Alerts {
             try { bannerSink?.invoke("$title — $body", icon, kind) } catch (t: Throwable) { }
         }
 
-        // ۳) نوتیفیکیشن سیستمی
+        // ۳) نوتیفیکیشن سیستمی — با سقف نرخ.
+        // هر `notify()` یک Binder IPC است؛ در بازپخش تاریخچه چند هزار فراخوانی
+        // پشت‌سرهم، نخ لایو و NotificationManager را قفل می‌کرد.
         if (allowNotify && ctx != null) {
-            postNotification(ctx, kind, title, body, icon)
+            val nowN = System.currentTimeMillis()
+            if (nowN - lastNotifAt >= MIN_NOTIF_GAP_MS) {
+                lastNotifAt = nowN
+                postNotification(ctx, kind, title, body, icon)
+            } else {
+                notifDropped++
+            }
         }
 
         // ۴) صدا و لرزش (فقط وقتی اپ در حال کار است یا لایو روشن است)
@@ -285,6 +293,15 @@ object Alerts {
      */
     private const val MIN_CUE_GAP_MS = 1500L
     @Volatile private var lastCueAt = 0L
+
+    /**
+     * کمینه فاصلهٔ بین دو نوتیفیکیشن سیستمی، و شمار آن‌هایی که به همین دلیل
+     * کنار گذاشته شدند (در لاگ/نوتیفیکیشن وضعیت قابل دیدن است).
+     */
+    private const val MIN_NOTIF_GAP_MS = 700L
+    @Volatile private var lastNotifAt = 0L
+    @Volatile var notifDropped: Long = 0L
+        private set
 
     /**
      * یک نمونهٔ [android.media.Ringtone] برای کل عمر اپ ساخته و **بازیافت** می‌شود.

@@ -53,6 +53,7 @@ object Log {
     const val CAT_UI = "UI"             // تب‌ها، تمام‌صفحه، ژست‌ها
     const val CAT_CFG = "CFG"           // تغییر تنظیمات
     const val CAT_PERF = "PERF"         // زمان‌بندی و کارایی
+    const val CAT_ANR  = "ANR"          // فریز نخ رابط (پشتهٔ نخ اصلی در لحظهٔ مسدودی)
 
     val ALL_CATS = listOf(
         CAT_APP, CAT_ENGINE, CAT_ZONE, CAT_ORDER, CAT_TRADE,
@@ -94,7 +95,7 @@ object Log {
     private const val MAX_FILE_BYTES = 1_500_000L
 
     val sessionStart: Long = System.currentTimeMillis()
-    var appVersion: String = "1.3.2"
+    var appVersion: String = "1.3.3"
 
     class Entry(val t: Long, val level: Int, val cat: String, val msg: String, val data: String?)
 
@@ -116,7 +117,7 @@ object Log {
     }
 
     // ── راه‌اندازی ────────────────────────────────────────────────────────────
-    fun init(ctx: Context, version: String = "1.3.2") {
+    fun init(ctx: Context, version: String = "1.3.3") {
         appCtx = ctx.applicationContext
         appVersion = version
         cachedLogDir = null

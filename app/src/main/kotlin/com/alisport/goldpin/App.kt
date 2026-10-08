@@ -51,6 +51,9 @@ class AppState {
     /** چند تیک به‌خاطر «تیک قبلی هنوز در جریان» حذف شده‌اند (نشانهٔ کندی فید). */
     @Volatile var lastLiveSkips: Long = 0L
 
+    /** آخرین بازپخش تاریخچه چند کندل داشت (که ساکت اجرا شد) — برای شفافیت در نوتیفیکیشن */
+    @Volatile var lastLiveSilentBars: Int = 0
+
     /**
      * حالت بک‌تست کامل: آخرین کندل هم بسته حساب می‌شود (دادهٔ تاریخی).
      * در حالت لایو، آخرین کندل «باز» می‌ماند و فقط پس از بسته شدن پردازش می‌شود
@@ -149,7 +152,7 @@ class AppState {
     /** راه‌اندازی لاگر و هشدارها + وصل کردن آن‌ها به موتور و کارگزار */
     fun initApp(ctx: Context) {
         appCtx = ctx.applicationContext
-        Log.init(appCtx!!, "1.3.2")
+        Log.init(appCtx!!, "1.3.3")
         Alerts.init(appCtx!!)
         val p = appCtx!!.getSharedPreferences("goldpin", Context.MODE_PRIVATE)
         // مهاجرت ۱٫۱ → ۱٫۲: تمام‌صفحهٔ خودکار دیگر پیش‌فرض نیست؛ تنظیم قدیمی true را یک‌بار خاموش کن.
@@ -370,14 +373,7 @@ class AppState {
                 // ۳) تغییر وضعیت روی نخ سریالی [io]
                 io.execute {
                     try {
-                        synchronized(stateLock) {
-                            mergeTail(tail)
-                            engine.broker = broker
-                            engine.barCommitHook = { cd -> broker.onBar(cd, live = false) }
-                            engine.feed(candles, lastIsClosed = false)
-                            candles.lastOrNull()?.let { broker.onBar(it, live = true) }
-                            publishSnapshot()
-                        }
+                        feedLiveTail(tail)
                     } finally {
                         // دروازه دقیقاً یک‌بار آزاد می‌شود — اینجا، بعد از پایان تغییر وضعیت.
                         // (پیش از این `handedOff = true` هم اینجا بود که لازم نیست: نخ net
@@ -412,10 +408,83 @@ class AppState {
     }
 
     /** ادغام دنبالهٔ تازه در سری چارت (بر اساس زمان — بدون تکرار و بدون ریپینت) */
+    /** فاصلهٔ میانی کندل‌ها بر حسب ثانیه (برای تشخیص تایم‌فریم واقعی یک سری) */
+    private fun medianStepSec(list: List<Candle>): Long {
+        if (list.size < 2) return 0L
+        val steps = ArrayList<Long>(list.size - 1)
+        for (i in 1 until list.size) {
+            val d = (list[i].t - list[i - 1].t) / 1000L
+            if (d > 0) steps.add(d)
+        }
+        if (steps.isEmpty()) return 0L
+        steps.sort()
+        return steps[steps.size / 2]
+    }
+
+    /** دو فاصلهٔ زمانی «یک تایم‌فریم» حساب می‌شوند؟ (تحمل ۱٫۵ برابر برای لرزش داده) */
+    private fun sameTimeframe(a: Long, b: Long): Boolean =
+        a > 0 && b > 0 && minOf(a, b) * 3 >= maxOf(a, b) * 2
+
+    /**
+     * حداکثر کندل بسته‌ای که یک تیک لایو «طبیعی» ممکن است جدید ببیند. بیشتر از این
+     * یعنی بازپخش تاریخچه (اپ بسته بوده یا سری عوض شده) و باید ساکت بماند.
+     */
+    private val LIVE_CATCHUP_SILENT_BARS = 3
+
+    /**
+     * هستهٔ تیک لایو: ادغام دنباله + اجرای موتور، زیر [stateLock] و روی نخ [io].
+     *
+     * ⚠ **محافظ سیل هشدار** — همین اپ را فریز می‌کرد: سرویس لایو `Alerts.inBacktest`
+     * را `false` می‌گذارد تا هشدارها واقعاً پخش شوند. ولی اگر همان تیک اول هزاران کندل
+     * **تاریخی** را بازپخش کند، همه «زنده» حساب می‌شدند و برای هر کدام یک
+     * `runOnUiThread` (ساخت/حذف View + requestLayout) و یک نوتیفیکیشن ساخته می‌شد ⇒
+     * چند هزار کار روی نخ رابط صف می‌شد و اپ کامل فریز می‌شد.
+     *
+     * حالا اگر کندل‌های بستهٔ جدید از [LIVE_CATCHUP_SILENT_BARS] بیشتر باشد، آن بسته
+     * به‌صورت بک‌تست **ساکت** (فقط لاگ، بدون بنر/نوتیفیکیشن/صدا/لرزش) اجرا می‌شود.
+     */
+    fun feedLiveTail(tail: List<Candle>) {
+        synchronized(stateLock) {
+            mergeTail(tail)
+            val newClosed = (candles.size - 1) - engine.processed
+            val prev = Alerts.inBacktest
+            val silent = newClosed > LIVE_CATCHUP_SILENT_BARS
+            if (silent) Alerts.inBacktest = true
+            try {
+                engine.broker = broker
+                engine.barCommitHook = { cd -> broker.onBar(cd, live = false) }
+                engine.feed(candles, lastIsClosed = false)
+                candles.lastOrNull()?.let { broker.onBar(it, live = true) }
+                publishSnapshot()
+            } finally {
+                Alerts.inBacktest = prev
+            }
+            if (silent) {
+                lastLiveSilentBars = newClosed
+                Log.w(Log.CAT_LIVE, "catch-up replayed silently",
+                    "newClosedBars=$newClosed > $LIVE_CATCHUP_SILENT_BARS — inha rokh-dade zende nistand")
+            }
+        }
+    }
+
     fun mergeTail(tail: List<Candle>) {
         if (tail.isEmpty()) return
         val before = candles.size
         if (candles.isEmpty()) { setCandles(tail, rebuildNow = true); return }
+        // ⚠ محافظ تایم‌فریم: اگر فاصلهٔ کندل‌های سری موجود با دنبالهٔ تازه یکی نباشد،
+        // ادغام یعنی ساختن یک سری **قاطی** (مثلاً ۶۶۸ کندل ۱H + ۶٬۰۰۰ کندل 1m).
+        // دقیقاً همان چیزی که در لاگ کاربر رخ داد: مود ۲ سری ۱H دانلود کرده بود، مود ۱
+        // chartTfSec را 1m کرد (تجمیع ۱H به 1m ممکن نیست) و تیک لایو پنج روز کندل 1m را
+        // داخل سری ۱H ریخت ⇒ موتور ~۶٬۰۰۰ کندل «جدید» دید و برای هر کدام هشدار داد.
+        val curStep = medianStepSec(candles)
+        val tailStep = medianStepSec(tail)
+        if (!sameTimeframe(curStep, tailStep)) {
+            Log.w(Log.CAT_LIVE, "series timeframe mismatch -> replacing series",
+                "sari=$before ba faseleye ${curStep}s · donbale=${tail.size} ba faseleye ${tailStep}s · " +
+                    "chart=${com.alisport.goldpin.core.Tf.label(chartTfSec)}")
+            setCandles(tail, rebuildNow = true)   // rebuild() خودش ساکت اجرا می‌شود
+            return
+        }
         val firstNew = tail.first().t
         // حذف بخش هم‌پوشان از انتهای سری فعلی
         var cut = candles.size

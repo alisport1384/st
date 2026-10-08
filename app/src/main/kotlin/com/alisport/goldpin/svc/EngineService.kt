@@ -27,9 +27,30 @@ import com.alisport.goldpin.util.Log
 class EngineService : Service() {
 
     private val state get() = AppState.instance
-    private val handler = Handler(Looper.getMainLooper())
+
+    /**
+     * ⚠ این Handler پیش‌تر روی `Looper.getMainLooper()` بود — یعنی **کل حلقهٔ لایو
+     * روی نخ رابط کاربری اجرا می‌شد**. هر تیک شامل این کارهاست:
+     *  • `buildNotification()` → خواندن وضعیت موتور/کارگزار + `Fa.jalali(...)`
+     *  • `PendingIntent.getActivity(...)` → یک Binder IPC
+     *  • `nm.notify(...)` → یک Binder IPC دیگر
+     * هیچ‌کدام لازم نیست روی نخ رابط باشد، و همه فقط در حالت لایو اتفاق می‌افتند —
+     * یعنی دقیقاً همان حالتی که کاربر گزارش فریز داده. حالا روی یک HandlerThread
+     * اختصاصی اجرا می‌شوند و نخ رابط آزاد می‌ماند.
+     */
+    private var tickThread: android.os.HandlerThread? = null
+    private var handler: Handler = Handler(Looper.getMainLooper())
     private var wakeLock: PowerManager.WakeLock? = null
     private var lastAutosave = 0L
+
+    private fun ensureTickThread(): Handler {
+        tickThread?.let { return handler }
+        val t = android.os.HandlerThread("goldpin-live-tick").apply { start() }
+        tickThread = t
+        handler = Handler(t.looper)
+        Log.i(Log.CAT_LIVE, "حلقهٔ تیک لایو به نخ پس‌زمینه منتقل شد", "thread=${t.name}")
+        return handler
+    }
 
     /**
      * حلقهٔ تیک لایو — **fixed-delay، نه fixed-rate**.
@@ -92,14 +113,17 @@ class EngineService : Service() {
         Alerts.inBacktest = false
         Log.i(Log.CAT_LIVE, "سرویس ارزیابی زنده شروع شد", "فاصله=${state.livePollMs}ms نماد=${state.symbol}")
         startForeground(NOTIF_ID, buildNotification())
-        handler.removeCallbacks(tick)
-        handler.post(tick)
+        val h = ensureTickThread()
+        h.removeCallbacks(tick)
+        h.post(tick)
         return START_STICKY
     }
 
     override fun onDestroy() {
         Log.i(Log.CAT_LIVE, "سرویس ارزیابی زنده متوقف شد")
         handler.removeCallbacks(tick)
+        try { tickThread?.quitSafely() } catch (e: Exception) { }
+        tickThread = null
         try { wakeLock?.release() } catch (e: Exception) { }
         state.liveRunning = false
         Alerts.liveRunning = false

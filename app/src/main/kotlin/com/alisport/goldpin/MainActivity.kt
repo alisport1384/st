@@ -86,6 +86,9 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         Log.i(Log.CAT_APP, "MainActivity ساخته شد", "نسخهٔ ${appVersionName()}")
         AppState.init(applicationContext)
+        // سگ نگهبان نخ رابط: اگر اپ فریز کرد، پشتهٔ نخ اصلی را قبل از هر چیز لاگ می‌کند.
+        // بدون این، در لحظهٔ فریز «نمی‌شود لاگ گرفت» و تشخیص غیرممکن می‌ماند.
+        com.alisport.goldpin.util.AnrWatchdog.start()
         Alerts.bannerSink = { text, color, kind -> showBanner(text, color, kind) }
         buildShell()
         s.onChange(uiListener)
@@ -111,6 +114,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         s.offChange(uiListener)                     // جلوگیری از انباشت شنونده‌ها
         if (isFinishing) {
+            com.alisport.goldpin.util.AnrWatchdog.stop()
             Alerts.bannerSink = null
             Log.i(Log.CAT_APP, "خروج از اپ")
             Log.flush()
@@ -297,43 +301,68 @@ class MainActivity : Activity() {
     // ══════════════════════════════════════════════════════════════════════════
     //  بنر هشدار داخل اپ
     // ══════════════════════════════════════════════════════════════════════════
+    /**
+     * بنر هشدار داخل اپ — **تک‌نمونه و ادغام‌شونده**.
+     *
+     * ⚠ پیش‌تر به ازای *هر* هشدار یک `runOnUiThread` اجرا می‌شد که یک View می‌ساخت،
+     * View قبلی را حذف می‌کرد و `postDelayed` جدید می‌گذاشت. هر `addView`/`removeView`
+     * یک `requestLayout()` روی کل سلسله‌مراتب است. وقتی موتور در بازپخش تاریخچه
+     * چند هزار هشدار می‌داد (لاگ کاربر)، چند هزار Runnable روی نخ رابط صف می‌شد و
+     * اپ کامل فریز می‌شد — و هر لمس بعدی پشت آن‌ها می‌ماند.
+     *
+     * حالا: یک بنر ثابت که فقط متنش عوض می‌شود، و با `AtomicBoolean` تضمین می‌شود
+     * **در هر لحظه حداکثر یک Runnable در صف نخ رابط باشد** (بقیه در آخرین متن
+     * ادغام می‌شوند).
+     */
+    private val bannerScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var bannerPendingText: String? = null
+    @Volatile private var bannerPendingColor: Int = 0
+    private var bannerLastShownAt = 0L
+
     private fun showBanner(text: String, color: Int, kind: String) {
-        runOnUiThread {
-            bannerHide?.let { content.removeCallbacks(it) }
-            bannerView?.let { content.removeView(it) }
-            val tv = Ui.tv(this, text, 12f, Color.WHITE, true).apply {
-                setBackgroundColor((color and 0x00FFFFFF) or 0xE0000000.toInt())
+        bannerPendingText = text
+        bannerPendingColor = color
+        // فقط اگر Runnable دیگری در صف نیست یکی بگذار — وگرنه همان قبلی این متن را هم می‌برد
+        if (bannerScheduled.compareAndSet(false, true)) {
+            runOnUiThread {
+                bannerScheduled.set(false)
+                drainBanner()
+            }
+        }
+    }
+
+    private fun drainBanner() {
+        val text = bannerPendingText ?: return
+        bannerPendingText = null
+        val color = bannerPendingColor
+
+        var tv = bannerView
+        if (tv == null) {
+            tv = Ui.tv(this, text, 12f, Color.WHITE, true).apply {
+                layoutDirection = View.LAYOUT_DIRECTION_RTL
                 setPadding(Ui.dp(this@MainActivity, 12f), Ui.dp(this@MainActivity, 9f),
                     Ui.dp(this@MainActivity, 12f), Ui.dp(this@MainActivity, 9f))
-                layoutDirection = View.LAYOUT_DIRECTION_RTL
-                setOnClickListener {
-                    val box = LinearLayout(this@MainActivity).apply {
-                        orientation = LinearLayout.VERTICAL
-                        setPadding(Ui.dp(this@MainActivity, 14f), Ui.dp(this@MainActivity, 10f),
-                            Ui.dp(this@MainActivity, 14f), Ui.dp(this@MainActivity, 10f))
-                    }
-                    for (r in Alerts.history().takeLast(40).reversed()) {
-                        box.addView(Ui.tv(this@MainActivity,
-                            "${Alerts.kindFa(r.kind)} · ${Fa.jalali(r.t)}\n${r.title}\n${r.body}", 11.5f, Palette.txt).apply {
-                            setPadding(0, Ui.dp(this@MainActivity, 4f), 0, Ui.dp(this@MainActivity, 4f))
-                        })
-                    }
-                    AlertDialog.Builder(this@MainActivity).setTitle("تاریخچهٔ هشدارها").setView(ScrollView(this@MainActivity).apply { addView(box) })
-                        .setPositiveButton("بستن", null).show()
-                }
+                setOnClickListener { showAlertHistory() }
             }
             val lp = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply { gravity = Gravity.TOP }
-            bannerView = tv
             content.addView(tv, lp)
-            val h = Runnable {
-                bannerView?.let { content.removeView(it) }
-                bannerView = null
-            }
-            bannerHide = h
-            content.postDelayed(h, 6000)
+            bannerView = tv
         }
+        tv.text = text
+        tv.setBackgroundColor((color and 0x00FFFFFF) or 0xE0000000.toInt())
+        tv.visibility = View.VISIBLE
+        bannerLastShownAt = android.os.SystemClock.uptimeMillis()
+
+        // تایمر پنهان‌سازی فقط یک‌بار تنظیم می‌شود (نه به ازای هر هشدار)
+        bannerHide?.let { content.removeCallbacks(it) }
+        val h = Runnable {
+            bannerView?.visibility = View.GONE
+            bannerHide = null
+        }
+        bannerHide = h
+        content.postDelayed(h, 6000)
     }
 
     // ══════════════════════════════════════════════════════════════════════════
