@@ -9,7 +9,7 @@ gradle :engine:test :app:testReleaseUnitTest :app:assembleRelease   # همه + �
 ```
 گزارش‌ها: `engine/build/reports/tests/test/index.html` و `app/build/reports/tests/testReleaseUnitTest/index.html`
 
-## ۲) فهرست کامل تست‌ها (۲۸ تست)
+## ۲) فهرست کامل تست‌ها (۵۴ تست)
 ### موتور — `ZoneTest` (۵)
 | تست | چه چیزی را تضمین می‌کند |
 |---|---|
@@ -55,6 +55,23 @@ gradle :engine:test :app:testReleaseUnitTest :app:assembleRelease   # همه + �
 | `fullscreen is off by default` | تمام‌صفحه اختیاری است |
 | `reports tab and log menu open quickly` | تب گزارش و منوی لاگ با ۱۵٬۰۰۰ خط لاگ سریع باز می‌شوند |
 | `frequent ui notifications are coalesced` | ۲۰۰ اطلاع‌رسانی پیاپی ارزان است و شنونده‌ها انباشته نمی‌شوند |
+
+## ۲٫۱) مجموعه‌های مربوط به مسیر لایو (۱٫۳٫۱ تا ۱٫۳٫۵)
+| مجموعه | تعداد | چه چیزی را قفل می‌کند |
+|---|---|---|
+| `LiveFreezeTest` | ۳ | کار سنگین از نخ رابط بیرون است |
+| `LiveBackpressureTest` | ۳ | دروازهٔ تیک: عمق صف ۴۸ → ۱ و تأخیر ۱۴۸۵ms → ۴ms |
+| `LiveGuardTest` | ۳ | خواننده‌های وضعیت زیر قفل‌اند (کنترل منفی: ۲ از ۳ شکست خوردند) |
+| `LiveAlertStormTest` | ۴ | گارد تایم‌فریم (`[60,3600]` → `[60]`)، بازپخش ساکت (۴۹۹ کندل ⇒ صفر بنر)، و **نتیجهٔ منفیِ** نظریهٔ «سیل بنر» |
+| `AnrWatchdogTest` | ۳ | تشخیص فریز (`detected=1`، ۵ ردپا)، بدون گزارش کاذب روی نخ سالم، و صدور دنبالهٔ نشست قبلی |
+| `YahooParseTest` | ۴ | `indicators` یک JSONObject است؛ پارسر روی شکل واقعی کار می‌کند؛ پیام ۱۴۴٬۲۴۱ نویسه‌ای به ۲۱۶ مهار می‌شود |
+
+### سیاست «کنترل منفی» (مهم)
+هر تستِ محافظی که اضافه می‌شود، یک بار با **خاموش کردن خودِ محافظ** اجرا می‌شود تا
+معلوم شود واقعاً چیزی را می‌سنجد. نمونه‌های ثبت‌شده:
+* `LiveGuardTest` با برداشتن `@Synchronized` و غیرفعال‌کردن دروازه ⇒ ۲ از ۳ شکست.
+* `AnrWatchdogTest` با `running = false` در `start()` ⇒ تست شکست.
+* `LiveAlertStormTest` با `if (false && …)` روی گارد تایم‌فریم ⇒ سری `[60, 3600]` شد.
 
 ## ۳) سیاست تست
 * هر باگ که یک بار رخ داد، یک تست می‌گیرد (مثال: باگ «نشست لاگ پس از پاک شدن حافظه» ⇒ ترمیم در `Log.add`).
