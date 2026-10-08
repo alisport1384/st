@@ -2,13 +2,13 @@
 
 [![Build APK](https://github.com/alisport1384/st/actions/workflows/build.yml/badge.svg)](https://github.com/alisport1384/st/actions/workflows/build.yml)
 
-**نسخهٔ ۱٫۳٫۳** — چارت TradingView-وار (زوم دو انگشتی + تمام‌صفحه)، لاگر کامل (`md` + `txt`)،
+**نسخهٔ ۱٫۳٫۴** — چارت TradingView-وار (زوم دو انگشتی + تمام‌صفحه)، لاگر کامل (`md` + `txt`)،
 هشدار «سفارش مسلح شد» و مستندات کامل ساخت از صفر تا صد در پوشهٔ [`docs/`](docs/README_FA.md).
 
 اپ اندروید برای **چارت‌کشی، بک‌تست و تست زندهٔ کاغذی** استراتژی PinReady روی طلا.
 همهٔ محاسبات داخل خود گوشی انجام می‌شود؛ هیچ سرور واسطی وجود ندارد و هیچ کلید API لازم نیست.
 
-> **فایل نصبی آماده:** `GoldPin-1.3.3-7.<sha>.apk` (نسخهٔ ۱٫۳٫۳ — امضاشده، قابل نصب روی اندروید ۷ به بالا)
+> **فایل نصبی آماده:** `GoldPin-1.3.4-8.<sha>.apk` (نسخهٔ ۱٫۳٫۴ — امضاشده، قابل نصب روی اندروید ۷ به بالا)
 > مسیر ساخت داخل همین مخزن: `app/build/outputs/apk/release/app-release.apk`
 
 > **۱٫۳٫۱ — رفع باگ:** باد شدن حجم کندل باز در حالت لایو (که نتیجهٔ لایو را از بک‌تست
@@ -67,13 +67,13 @@
 
 صفحهٔ انتشار: **[github.com/alisport1384/st/releases](https://github.com/alisport1384/st/releases)**
 
-آخرین نسخهٔ پایدار: **GoldPin 1.3.3** (versionCode 7) — فایل
-`GoldPin-1.3.3-7.<sha>.apk` به‌همراه `sha256` کنارش. لینک‌ها عمومی‌اند و بدون
+آخرین نسخهٔ پایدار: **GoldPin 1.3.4** (versionCode 8) — فایل
+`GoldPin-1.3.4-8.<sha>.apk` به‌همراه `sha256` کنارش. لینک‌ها عمومی‌اند و بدون
 لاگین دانلود می‌شوند.
 
 صحت فایل دانلودشده:
 ```bash
-sha256sum -c GoldPin-1.3.3-7.<sha>.apk.sha256
+sha256sum -c GoldPin-1.3.4-8.<sha>.apk.sha256
 ```
 
 ## گرفتن فایل نصبی از GitHub Actions (بدون سیستم محلی)
@@ -83,7 +83,7 @@ sha256sum -c GoldPin-1.3.3-7.<sha>.apk.sha256
 
 1. تب **Actions** ← آخرین اجرای «Build APK» (یا *Run workflow* ← *Run*).
 2. پایین صفحه ← **Artifacts** ← `GoldPin-1.3.1-apk` را دانلود کن.
-3. از zip بیرون بیاور → `GoldPin-1.3.3-7.<sha>.apk` نصب‌شدنی است (امضاشده ، همراه `sha256`).
+3. از zip بیرون بیاور → `GoldPin-1.3.4-8.<sha>.apk` نصب‌شدنی است (امضاشده ، همراه `sha256`).
 
 برای انتشار ماندگار: `git tag v1.3.1 && git push origin v1.3.1` → فایل در **Releases** قرار می‌گیرد.
 هر اجرای CI امضای APK را با `apksigner` تأیید می‌کند و آزمون‌ها را هم اجرا می‌کند

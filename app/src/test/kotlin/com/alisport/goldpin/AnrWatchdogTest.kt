@@ -83,4 +83,32 @@ class AnrWatchdogTest {
         println("healthy main thread: detected=$detected")
         assertTrue("نخ رابط سالم نباید گزارش فریز بدهد — ولی $detected بار داد", detected == 0)
     }
+
+    /**
+     * حلقهٔ کامل تشخیص باید بسته باشد: ردپای ANR نه‌تنها نوشته شود، بلکه بعد از
+     * بستن و بازکردن اپ هم **قابل صدور** باشد. پیش‌تر `exportLog` فقط بافر نشست
+     * جاری را می‌داد، یعنی بعد از فریز راهی برای بیرون کشیدن ردپا نبود.
+     */
+    @Test
+    fun `previous session log is included in the export after a restart`() {
+        val ctx = org.robolectric.RuntimeEnvironment.getApplication()
+        Log.init(ctx, "test")
+        Log.setEnabled(ctx, true)
+        val marker = "ANR-MARKER-${System.nanoTime()}"
+        Log.e(Log.CAT_ANR, marker, "main-thread stack:\n    at fake.Frame")
+        Log.flush()
+
+        // شبیه‌سازی بستن و بازکردن مجدد اپ
+        Log.init(ctx, "test")
+        val exported = Log.reportTxt()
+        println("export contains previous-session marker: ${exported.contains(marker)}")
+        assertTrue(
+            "خروجی باید دنبالهٔ نشست قبلی (شامل ردپای ANR) را داشته باشد",
+            exported.contains(marker)
+        )
+        assertTrue(
+            "خروجی باید مشخص کند این بخش از نشست قبلی است",
+            exported.contains("نشست قبلی")
+        )
+    }
 }

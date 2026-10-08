@@ -75,6 +75,21 @@ object Log {
 
     private var appCtx: Context? = null
     private var session: Session? = null
+
+    /**
+     * دنبالهٔ لاگِ **نشست قبلی**.
+     *
+     * چرا لازم است: `exportLog` فقط بافر حافظهٔ نشست جاری را صادر می‌کند. اگر اپ
+     * فریز کند و کاربر مجبور شود آن را ببندد و دوباره باز کند، ردپای `ANR` روی
+     * دیسک مانده ولی هیچ راهی برای بیرون کشیدنش نبود — یعنی دقیقاً همان
+     * «نمی‌شود لاگ گرفت». حالا دنبالهٔ نشست قبلی به بافر چسبانده می‌شود تا با
+     * همان دکمهٔ خروجی بیرون بیاید.
+     *
+     * ⚠ عمداً در `buffer` ریخته نمی‌شود: وگرنه هر بار که اپ باز شود، خطوط نشست
+     * قبل دوباره در فایل نشست جدید نوشته و تکرار می‌شدند.
+     */
+    @Volatile private var prevTail: List<String> = emptyList()
+    private const val PREV_TAIL_LINES = 500
     private val buffer = ArrayDeque<Entry>()
 
     /**
@@ -95,7 +110,7 @@ object Log {
     private const val MAX_FILE_BYTES = 1_500_000L
 
     val sessionStart: Long = System.currentTimeMillis()
-    var appVersion: String = "1.3.3"
+    var appVersion: String = "1.3.4"
 
     class Entry(val t: Long, val level: Int, val cat: String, val msg: String, val data: String?)
 
@@ -117,10 +132,11 @@ object Log {
     }
 
     // ── راه‌اندازی ────────────────────────────────────────────────────────────
-    fun init(ctx: Context, version: String = "1.3.3") {
+    fun init(ctx: Context, version: String = "1.3.4") {
         appCtx = ctx.applicationContext
         appVersion = version
         cachedLogDir = null
+        capturePreviousSessionTail()
         // اگر پوشهٔ لاگ عوض شده باشد (مثلاً پاک شدن حافظه یا اجرای مجدد)،
         // نشست قبلی باطل است و از نو باز می‌شود.
         // ⚠ بستن نشست هم باید روی نخ نوشتن انجام شود، وگرنه با writeEntryِ در حال
@@ -136,6 +152,24 @@ object Log {
         logcat = p.getBoolean("log_logcat", true)
         muted.clear()
         p.getStringSet("log_muted", emptySet())?.forEach { muted.add(it) }
+    }
+
+    /** آخرین [PREV_TAIL_LINES] خط تازه‌ترین فایل لاگ روی دیسک را نگه می‌دارد. */
+    private fun capturePreviousSessionTail() {
+        prevTail = try {
+            val newest = files().firstOrNull { it.name.endsWith(".txt") } ?: return
+            if (newest.length() <= 0L) return
+            val lines = newest.readLines(Charsets.UTF_8)
+            val tail = if (lines.size > PREV_TAIL_LINES) lines.takeLast(PREV_TAIL_LINES) else lines
+            listOf(
+                "",
+                "########## دنبالهٔ نشست قبلی · ${newest.name} " +
+                    "(${lines.size} خط، ${PREV_TAIL_LINES} خط آخر) ##########",
+                "########## (اگر اپ فریز کرد و بسته شد، ردپای ANR اینجاست) ##########"
+            ) + tail
+        } catch (t: Throwable) {
+            emptyList()
+        }
     }
 
     private fun prefs(ctx: Context) = ctx.getSharedPreferences("goldpin", Context.MODE_PRIVATE)
@@ -342,6 +376,7 @@ object Log {
     fun reportMd(): String {
         val sb = StringBuilder()
         sb.append(mdHeader())
+        for (l in prevTail) sb.append("| ").append(mdEsc(l)).append(" |\n")
         for (e in buffer) {
             val hhmmss = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date(e.t))
             sb.append("| $hhmmss | ${levelName(e.level)} | ${e.cat} | ${mdEsc(e.msg)} | ${mdEsc(e.data ?: "")} |\n")
@@ -354,6 +389,7 @@ object Log {
     fun reportTxt(): String {
         val sb = StringBuilder()
         sb.append(txtHeader())
+        for (l in prevTail) sb.append(l).append('\n')
         for (e in buffer) {
             val hhmmss = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date(e.t))
             sb.append("$hhmmss ${levelName(e.level).padEnd(5)} [${e.cat}] ${e.msg}")

@@ -152,7 +152,7 @@ class AppState {
     /** راه‌اندازی لاگر و هشدارها + وصل کردن آن‌ها به موتور و کارگزار */
     fun initApp(ctx: Context) {
         appCtx = ctx.applicationContext
-        Log.init(appCtx!!, "1.3.3")
+        Log.init(appCtx!!, "1.3.4")
         Alerts.init(appCtx!!)
         val p = appCtx!!.getSharedPreferences("goldpin", Context.MODE_PRIVATE)
         // مهاجرت ۱٫۱ → ۱٫۲: تمام‌صفحهٔ خودکار دیگر پیش‌فرض نیست؛ تنظیم قدیمی true را یک‌بار خاموش کن.
