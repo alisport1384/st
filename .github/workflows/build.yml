@@ -213,6 +213,8 @@ jobs:
           path: |
             engine/build/reports/tests/
             app/build/reports/tests/
+            engine/build/test-results/
+            app/build/test-results/
           if-no-files-found: ignore
           retention-days: 30
 
@@ -240,3 +242,5 @@ jobs:
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
+          # اگر همان tag دوباره اجرا شود، فایل‌ها جایگزین شوند نه اینکه job بشکند
+          overwrite: true
