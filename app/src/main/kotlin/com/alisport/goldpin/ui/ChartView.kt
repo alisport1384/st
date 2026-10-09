@@ -783,22 +783,37 @@ class ChartView @JvmOverloads constructor(
         // ── برچسب‌های استراتژی ──
         if (showMarkers) drawMarkers(canvas, from, to, priceH)
 
-        // ── محور زمان ──
+        // ── محور زمان (تراز بر مرزهای طبیعی زمان — مانند تریدینگ‌ویو) ──
+        // پیش‌تر برچسب‌ها «هر N کندل» انتخاب می‌شدند، پس روی زمان‌های دلخواه می‌افتادند
+        // (مثلاً ۱۴:۳۷). حالا فقط روی مرزهای طبیعی (ساعت، نیم‌روز، روز، هفته) می‌نشینند
+        // و در اولین کندلِ هر روز، **تاریخ** نشان داده می‌شود.
         canvas.drawRect(0f, h, chartW.toFloat(), chartH.toFloat(), pAxis)
-        val stride = timeStride().coerceAtLeast(1)
-        var i = from - (from % stride)
-        var tGuard = 0
-        while (i <= to && tGuard++ < 400) {              // کران سخت: حداکثر ۴۰۰ برچسب
-            if (i >= 0) {
-                val x = xOf(i.toFloat())
+        val tickMs = timeTickSec().toLong() * 1000L
+        var lastTick = Long.MIN_VALUE
+        var prevDay = Long.MIN_VALUE
+        var drawn = 0
+        var k = max(0, from)
+        val kEnd = min(candles.size - 1, to)
+        while (k <= kEnd && drawn < 400) {               // کران سخت: حداکثر ۴۰۰ برچسب
+            val t = candles[k].t
+            val tick = t / tickMs
+            if (tick != lastTick) {
+                lastTick = tick
+                val x = xOf(k.toFloat())
                 if (x in 0f..plotW) {
                     canvas.drawLine(x, 0f, x, h, pGridDash)
-                    val lbl = timeLabel(candles[i].t)
+                    val day = t / 86_400_000L
+                    val newDay = day != prevDay
+                    prevDay = day
+                    val lbl = timeLabel(t, tickMs, newDay)
                     val tw = pTxtSm.measureText(lbl)
-                    canvas.drawText(lbl, (x - tw / 2).coerceIn(2f, plotW - tw - 2f), chartH - Ui.dp(context, 5f).toFloat(), pTxtSm)
+                    val paint = if (newDay && tickMs < 86_400_000L) pTxt else pTxtSm
+                    canvas.drawText(lbl, (x - tw / 2).coerceIn(2f, plotW - tw - 2f),
+                        chartH - Ui.dp(context, 5f).toFloat(), paint)
+                    drawn++
                 }
             }
-            i += stride
+            k++
         }
 
         // ── برچسب آخرین قیمت ──
@@ -849,24 +864,35 @@ class ChartView @JvmOverloads constructor(
         else -> String.format("%.2f", p)
     }
 
-    private fun timeStride(): Int {
+    /**
+     * گام برچسب‌های محور زمان، بر حسب **ثانیه** و همیشه روی یک مرز طبیعی.
+     *
+     * مثل تریدینگ‌ویو: تعداد برچسب‌ها با زوم کم و زیاد نمی‌شود؛ آنچه عوض می‌شود
+     * «دانه‌بندی» است — از دقیقه به ۵دقیقه، ۱۵دقیقه، ساعت، ۴ساعت، روز، هفته.
+     * چون برچسب فقط وقتی `t / tickMs` عوض می‌شود رسم می‌گردد، مرزها همیشه روی
+     * زمان‌های رُند می‌نشینند (۱۴:۰۰ نه ۱۴:۳۷).
+     */
+    private fun timeTickSec(): Int {
         val bars = (plotW / barW).coerceAtLeast(1f)
-        val want = max(2, (bars / 6f).toInt())
-        val all = listOf(1, 2, 3, 5, 10, 15, 20, 30, 60, 120, 240, 480, 960, 2000, 5000, 10000)
-        return all.firstOrNull { it >= want } ?: 20000
+        val wantSec = ((bars / 6f).coerceAtLeast(1f) * chartTfSec).toLong()
+        val steps = listOf(60L, 300L, 900L, 1800L, 3600L, 7200L, 14400L, 21600L,
+            43200L, 86400L, 172800L, 604800L)
+        return (steps.firstOrNull { it >= wantSec } ?: 604800L).toInt()
     }
 
-    private fun timeLabel(t: Long): String {
-        val c = java.util.Calendar.getInstance().apply { timeInMillis = t }
-        val hh = c.get(java.util.Calendar.HOUR_OF_DAY)
-        val mm = c.get(java.util.Calendar.MINUTE)
-        val d = c.get(java.util.Calendar.DAY_OF_MONTH)
-        val mo = c.get(java.util.Calendar.MONTH) + 1
-        return when {
-            chartTfSec < 3600 -> Fa.d(String.format("%02d:%02d", hh, mm))
-            chartTfSec < 86400 -> Fa.d(String.format("%02d/%02d %02d:%02d", mo, d, hh, mm))
-            else -> Fa.jalaliShort(t)
-        }
+    /**
+     * برچسب محور زمان.
+     * @param tickMs گام فعلی محور
+     * @param newDay آیا این کندل اولین کندلِ روزِ جدید است
+     *
+     * قاعده (همان تریدینگ‌ویو): در تایم‌فریم داخل‌روزی ساعت نشان داده می‌شود و در
+     * اولین کندل هر روز، تاریخ جایش را می‌گیرد. در تایم‌فریم روزانه و بالاتر فقط تاریخ.
+     */
+    private fun timeLabel(t: Long, tickMs: Long, newDay: Boolean): String {
+        if (tickMs >= 86_400_000L) return Fa.jalaliShort(t)
+        if (newDay) return Fa.jalaliShort(t)
+        val c = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply { timeInMillis = t }
+        return Fa.d(String.format("%02d:%02d", c.get(java.util.Calendar.HOUR_OF_DAY), c.get(java.util.Calendar.MINUTE)))
     }
 
     private fun timeLabelFull(t: Long): String = Fa.jalali(t)
