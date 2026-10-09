@@ -143,39 +143,52 @@ object VolumeProfile {
             var firstPass = true
             while (guard < 4 * rows && out.size < 2) {
                 guard++
-                // ① اولین قلهٔ محلی در جهت حرکت
+                // ① صعود به سمت قلهٔ محلی در جهت حرکت
+                //   الگوریتم §۲-۴: «صعود می‌کنیم تا جایی که ردیف بعد بزرگ‌تر یا مساوی باشد،
+                //   سپس به دره می‌رویم». پیش‌تر این حلقه با `rv[j+stepDir] > rv[j]` در برخورد
+                //   با فلات/ردیف مساوی بلافاصله توقف می‌کرد و break انتهای حلقه (زمانی که
+                //   دره قلهٔ دیگری در پی نداشت) کل جست‌وجوی ناحیه‌های بعدی را می‌کشت. برای
+                //   تطابق با سند، == را هم مجاز می‌کنیم و در پایان حلقه اگر قله‌ای پیدا
+                //   نشده آن را نقطه شروعِ پیمایش بعدی می‌گیریم (و فقط در همان حالت، در پاس
+                //   اول اگر ردیفِ اول قلهٔ لبه بود آن را می‌پذیریم).
                 var pk = -1
                 var j = i
                 while (j + stepDir >= 0 && j + stepDir <= rows - 1) {
-                    if (rv[j + stepDir] > rv[j]) j += stepDir else break
+                    if (rv[j + stepDir] >= rv[j]) j += stepDir else break
                 }
                 if (j != i) pk = j
                 // ①-ب (§۲-۴، افزودهٔ ۱٫۳٫۸ — قاعدهٔ کارفرما):
                 // اگر **ردیف نخستِ پیمایش** (لبهٔ کندل: سقف در نزولی، کف در صعودی) از همان
                 // ابتدا بزرگ‌تر از ردیف بعدیِ خودش باشد، یعنی قبلش هیچ ردیف بزرگ‌تری نیست و
-                // همان ردیف قله است. در این حالت **لبهٔ کندل** شروع ناحیه می‌شود:
-                //   نزولی → سقف کندل · صعودی → کف کندل
-                // چون `zTop = lo + (hiIdx + 1) * step` است، `hiIdx = rows - 1` خودش `hi`
-                // (سقف کندل) را می‌دهد و `loIdx = 0` خودش `lo` (کف کندل) را.
-                // ⚠ فقط در پاس اول: در پاس‌های بعد `i` وسط جدول است و کوچک‌بودن ردیف بعدی
-                // معنای «قله» ندارد.
+                // همان ردیف قله است.
                 else if (firstPass) {
                     val nx = i + stepDir
                     if (nx in 0..rows - 1 && rv[nx] < rv[i]) pk = i
                 }
                 firstPass = false
-                if (pk < 0) break
+                if (pk < 0) break   // انتهای جدول و هیچ قله‌ای پیدا نشد — تمام.
                 // ② اولین درهٔ محلی بعد از قله
                 var tr = -1
                 var k = pk
                 while (k + stepDir >= 0 && k + stepDir <= rows - 1) {
-                    if (rv[k + stepDir] < rv[k]) k += stepDir else break
+                    if (rv[k + stepDir] <= rv[k]) k += stepDir else break
                 }
                 if (k != pk) tr = k
-                if (tr < 0) break
+                //  ⚠ اگر بعد از قله دره‌ای پیدا نشد (یعنی همهٔ ردیف‌ها در جهت حرکت
+                //  یکسان یا بزرگ‌تر بودند — معمولاً در انتهای جدول)، قله تا انتهای جدول
+                //  را یک ناحیه می‌گیریم و حلقه تمام می‌شود.
+                val loIdx: Int
+                val hiIdx: Int
+                if (tr >= 0) {
+                    loIdx = min(pk, tr)
+                    hiIdx = max(pk, tr)
+                } else {
+                    // bull: pk قله‌است و دره پیدا نشد → تا انتهای بالا
+                    // bear: pk قله‌است و دره پیدا نشد (معمولاً مرز پایین) → تا انتهای پایین
+                    loIdx = if (bull) pk else 0
+                    hiIdx = if (bull) (rows - 1) else pk
+                }
                 // ③ محدوده = از مرز پایین قله تا مرز بالای دره
-                val loIdx = min(pk, tr)
-                val hiIdx = max(pk, tr)
                 val zBot = lo + loIdx * step
                 val zTop = lo + (hiIdx + 1) * step
                 val rowCnt = hiIdx - loIdx + 1
@@ -184,7 +197,8 @@ object VolumeProfile {
                     val z = Zone(zTop, zBot, if (closeOK) out.size + 1 else rej.size + 1, loIdx, hiIdx)
                     if (closeOK) out.add(z) else rej.add(z)
                 }
-                i = tr + stepDir
+                //  ادامه پیمایش از یک ردیف بعد از دره (یا قله اگر دره پیدا نشد).
+                i = if (tr >= 0) tr + stepDir else pk + stepDir
             }
         }
         return if (wantRejected) rej else out

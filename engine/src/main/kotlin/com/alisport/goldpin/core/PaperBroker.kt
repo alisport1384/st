@@ -64,17 +64,18 @@ class PaperBroker(private val cfg: Settings) {
         return max(q, 0.0)
     }
 
-    /** ثبت سفارش ورود (در لحظهٔ مسلح شدن). مثل Pine: فقط اگر پوزیشن و سفارش بازی نباشد. */
-    fun registerLimit(s: Setup, bar: Candle) {
+    /** ثبت سفارش ورود (در لحظهٔ مسلح شدن). مثل Pine: فقط اگر پوزیشن و سفارش بازی نباشد.
+     *  @return `true` اگر سفارش واقعاً ثبت شد؛ `false` اگر رد شد (مثلاً سفارش/پوزیشن باز هست). */
+    fun registerLimit(s: Setup, bar: Candle): Boolean {
         if (pending != null || open != null) {
             lastError = "سفارش جدید ثبت نشد (پوزیشن/سفارش باز)"
-            return
+            return false
         }
         val entryPx = if (s.bull) s.hvH else s.hvL
         val qty = qtyFor(entryPx, s.sl)
         if (qty <= 0) {
             lastError = "حجم صفر بود"
-            return
+            return false
         }
         val o = Order(
             id = orderSeq++, setupId = s.id, dir = s.dir, type = "LIMIT",
@@ -89,6 +90,7 @@ class PaperBroker(private val cfg: Settings) {
             "type=${if (s.dir == 1) "BUY_LIMIT" else "SELL_LIMIT"} price=${fmt(entryPx)} sl=${fmt(s.sl)} tp1=${fmt(s.tp1)} tp2=${fmt(s.tp2)} tp=${fmt(s.tpx)} qty=${fmt(qty)} bar=${bar.bi}")
         alarm(AlertKind.ARMED, if (s.dir == 1) "سفارش خرید آماده شد" else "سفارش فروش آماده شد",
             "ستاپ #${s.id} · ورود ${fmt(entryPx)} · حدضرر ${fmt(s.sl)} · حدسود ${fmt(s.tpx)} · حجم ${fmt(qty)}")
+        return true
     }
 
     /**

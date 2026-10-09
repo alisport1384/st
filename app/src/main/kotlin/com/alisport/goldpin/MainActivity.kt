@@ -946,7 +946,7 @@ class MainActivity : Activity() {
             })
         }
         v.addView(switchRow("ساخت حجم تقریبی اگر فید حجم نداشت", s.useSyntheticVolume) { s.useSyntheticVolume = it })
-        v.addView(switchRow("حالت بک‌تست کامل (آخرین کندل هم بسته)", s.backtestFull) { s.backtestFull = it; s.rebuildAsync(clearOrders = false) })
+        v.addView(switchRow("حالت بک‌تست کامل (آخرین کندل هم بسته)", s.backtestFull) { s.backtestFull = it; s.rebuildAsync(clearOrders = true) })
         v.addView(numRow("فاصلهٔ به‌روزرسانی لایو (ثانیه)", s.livePollMs / 1000.0) { s.livePollMs = (it * 1000).toLong().coerceAtLeast(2000) })
         val feedRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         feedRow.addView(Ui.btn(this, "دانلود تاریخچه", Palette.panel2, Palette.txt, 11f).apply {

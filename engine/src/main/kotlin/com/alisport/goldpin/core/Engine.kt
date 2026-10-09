@@ -533,11 +533,18 @@ class Engine(val cfg: Settings) {
     }
 
     private fun pruneSetups() {
+        //  ⚠ ستاپ‌های در حال معامله (stage=7) هرگز حذف نمی‌شوند — §۷-۲ و قانون
+        //  «معاملهٔ باز هرگز به‌زور بسته نمی‌شود». اول ستاپ‌های پایان‌یافته (stage=8)،
+        //  بعد قدیمی‌ترین ستاپِ فعالِ قبل از ورود (stage<7) حذف می‌شود.
         while (setups.size > cfg.maxSetups) {
             var pick = setups.indexOfFirst { it.stage == 8 }
-            if (pick < 0) pick = 0
+            if (pick < 0) pick = setups.indexOfFirst { it.stage < 7 }
+            if (pick < 0) break   // همه ستاپ‌ها در معامله‌اند — بیش از این حذف نمی‌کنیم
             val s = setups.removeAt(pick)
-            if (s.stage < 7) events.add("[${s.id}] پروندهٔ ستاپ بسته شد (سقف ستاپ‌های هم‌زمان)")
+            if (s.stage < 7) {
+                events.add("[${s.id}] پروندهٔ ستاپ بسته شد (سقف ستاپ‌های هم‌زمان)")
+                broker?.onSetupInvalidated(s)
+            }
         }
     }
 
@@ -585,11 +592,17 @@ class Engine(val cfg: Settings) {
                 }
                 if (broken) {
                     val old = s.midRef
+                    //  ابطال میانی در هر مرحله‌ای (۱..۶) تایید را باطل می‌کند؛
+                    //  اگر ستاپ قبلاً مسلح شده بود (stage=6)، سفارش معلق هم لغو می‌شود —
+                    //  در غیر این‌صورت سفارش یتیم می‌ماند و ممکن است در کندل بعد پر شود
+                    //  در حالی که موتور دیگر آن ستاپ را نمی‌شناسد.
+                    if (s.stage == 6) broker?.onSetupInvalidated(s)
                     s.midRef = Double.NaN; s.midBi = -1; s.markBi = -1
                     s.touchMidStart = aggM.cur?.t ?: mc.t
                     s.stage = 2
                     s.lvBi = -1; s.lvConfBi = -1; s.hvBi = -1; s.hvScanBi = -1; s.runMax = Double.NaN
                     s.lvTouched = false; s.lvUsed = false
+                    s.orderId = -1
                     addMarker(mc.bi, old, 10, "تایید میانی باطل شد")
                     lg("ENGINE", "تایید میانی باطل شد · ستاپ #${s.id}", "سطح قبلی=${f2(old)} bar=${mc.bi}")
                 } else if (s.markBi < 0) {
@@ -654,10 +667,12 @@ class Engine(val cfg: Settings) {
                         addMarker(q1.bi, if (bullL) s.lvH else s.lvL, 11, "باکس ولوم کم مصرف شد ✖")
                         lg("ZONE", "باکس ولوم کم مصرف شد (یک‌بارمصرف) · ستاپ #${s.id}",
                             "box=${f2(s.lvL)}-${f2(s.lvH)} bar=${q1.bi}")
-                        if (s.stage == 4 || s.stage == 5) {
+                        if (s.stage in 4..6) {
+                            //  §۶-۱۴: مصرف شدن باکس LV → ستاپ می‌میرد، حتی اگر مسلح (stage=6) باشد.
                             s.stage = 8
                             s.note = "باکس ولوم کم مصرف شد (یک‌بار)"
                             events.add("[${s.id}] باکس ولوم کم بدون معامله مصرف شد")
+                            broker?.onSetupInvalidated(s)
                         }
                     }
                 }
@@ -690,9 +705,12 @@ class Engine(val cfg: Settings) {
             if (s.stage < 7 && !s.zGone && curBi > s.zBi) {
                 val broken = if (bull) close < s.zBot else close > s.zTop
                 if (broken) {
+                    //  اگر سفارش معلق داشت (stage=6) آن را هم لغو کن
+                    if (s.stage == 6) broker?.onSetupInvalidated(s)
                     s.zGone = true
                     s.stage = 8
                     s.note = "شکست ناحیهٔ ساختار (لغو)"
+                    s.orderId = -1
                     events.add("[${s.id}] لغو شد — شکست ناحیهٔ ساختار")
                     addMarker(curBi, close, 10, "لغو · شکست ناحیهٔ ساختار")
                     lg("ZONE", "ناحیهٔ ساختار شکست (لغو ستاپ #${s.id})",
@@ -747,8 +765,10 @@ class Engine(val cfg: Settings) {
             // ④ ورود : برگشت به ناحیهٔ ولوم زیاد (پر شدن سفارش لیمیت)
             if (s.stage == 6 && curBi > s.hvConfBi) {
                 if (if (bull) close < s.hvL else close > s.hvH) {
+                    //  §۶-۱۷: کلوز آن‌طرف ناحیه HV بعد از مسلح شدن → نقض.
                     s.hvBi = -1; s.runMax = volume; s.stage = 4
                     broker?.onSetupInvalidated(s)
+                    s.orderId = -1
                 } else if (if (bull) low <= s.hvH else high >= s.hvL) {
                     s.entry = if (bull) s.hvH else s.hvL
                     s.stage = 7
@@ -762,9 +782,11 @@ class Engine(val cfg: Settings) {
 
             // ⑤ مدیریت معامله : حدضرر / سر‌به‌سر / حدسود (بررسی موتور)
             //   ترتیب محافظه‌کارانه، مطابق §۲-۹ و PaperBroker.manageBar:
-            //   SL → TPX → TP1 (be=true) → TP2 → BE
+            //   SL/TPX بررسی اول می‌شوند و در یک کندل پایان می‌دهند.
+            //   TP1 و TP2 پله‌های میانی‌اند و در یک کندل می‌توانند هر دو لمس شوند
+            //   (مثلاً اسپایک قوی) — قبلاً به‌خاطر else-if فقط TP1 ثبت می‌شد و TP2
+            //   در همان کندل نادیده می‌ماند. حالا TP2 با if مستقل چک می‌شود.
             //   توجه: stage فقط در پایان واقعی (SL/TPX/BE) به ۸ می‌رود.
-            //   پله‌های میانی (TP1/TP2) استیج را جلو نمی‌برند چون هنوز بخشی از حجم باز است.
             if (s.stage == 7 && !s.sl.isNaN() && !s.tpx.isNaN()) {
                 var done = false
                 var px = Double.NaN
@@ -772,33 +794,44 @@ class Engine(val cfg: Settings) {
                 if (bull) {
                     if (low <= s.sl) { done = true; px = s.sl; note = if (s.be) "خروج سر‌به‌سر" else "حد ضرر" }
                     else if (high >= s.tpx) { done = true; px = s.tpx; note = "حد سود نهایی (1.272)" }
-                    else if (!s.be && !s.tp1.isNaN() && high >= s.tp1) {
-                        s.be = true; s.sl = s.entry
-                        addMarker(curBi, s.entry, 8, "TP1 (38%) ✔ · حدضرر = سر‌به‌سر")
-                        lg("TRADE", "TP1 (۳۸٪) لمس شد → حدضرر به سر‌به‌سر منتقل شد · ستاپ #${s.id}",
-                            "tp1=${f2(s.tp1)} bar=$curBi")
-                        alarm(AlertKind.TP1, "TP1 (۳۸٪) لمس شد", "ستاپ #${s.id} · حدضرر به سر‌به‌سر منتقل شد · ${f2(s.tp1)}")
-                    } else if (s.be && !s.tp2Hit && !s.tp2.isNaN() && high >= s.tp2) {
-                        s.tp2Hit = true
-                        addMarker(curBi, s.tp2, 8, "TP2 (50%) ✔")
-                        lg("TRADE", "TP2 (۵۰٪) لمس شد · ستاپ #${s.id}", "tp2=${f2(s.tp2)} bar=$curBi")
-                        alarm(AlertKind.TP2, "TP2 (۵۰٪) لمس شد", "ستاپ #${s.id} · قیمت ${f2(s.tp2)}")
-                    } else if (s.be && low <= s.entry) { done = true; px = s.entry; note = "خروج سر‌به‌سر" }
+                    else {
+                        //  TP1: قبل از BE، هم در یک کندل با TP2 می‌تواند رخ دهد
+                        if (!s.be && !s.tp1.isNaN() && high >= s.tp1) {
+                            s.be = true; s.sl = s.entry
+                            addMarker(curBi, s.entry, 8, "TP1 (38%) ✔ · حدضرر = سر‌به‌سر")
+                            lg("TRADE", "TP1 (۳۸٪) لمس شد → حدضرر به سر‌به‌سر منتقل شد · ستاپ #${s.id}",
+                                "tp1=${f2(s.tp1)} bar=$curBi")
+                            alarm(AlertKind.TP1, "TP1 (۳۸٪) لمس شد", "ستاپ #${s.id} · حدضرر به سر‌به‌سر منتقل شد · ${f2(s.tp1)}")
+                        }
+                        //  TP2: بعد از TP1 (در همان کندل ممکن است)
+                        if (s.be && !s.tp2Hit && !s.tp2.isNaN() && high >= s.tp2) {
+                            s.tp2Hit = true
+                            addMarker(curBi, s.tp2, 8, "TP2 (50%) ✔")
+                            lg("TRADE", "TP2 (۵۰٪) لمس شد · ستاپ #${s.id}", "tp2=${f2(s.tp2)} bar=$curBi")
+                            alarm(AlertKind.TP2, "TP2 (۵۰٪) لمس شد", "ستاپ #${s.id} · قیمت ${f2(s.tp2)}")
+                        }
+                        //  BE خروج سر‌به‌سر — فقط بعد از TP1 و اگر قیمت به ورود برگشته
+                        if (s.be && low <= s.entry) { done = true; px = s.entry; note = "خروج سر‌به‌سر" }
+                    }
                 } else {
                     if (high >= s.sl) { done = true; px = s.sl; note = if (s.be) "خروج سر‌به‌سر" else "حد ضرر" }
                     else if (low <= s.tpx) { done = true; px = s.tpx; note = "حد سود نهایی (1.272)" }
-                    else if (!s.be && !s.tp1.isNaN() && low <= s.tp1) {
-                        s.be = true; s.sl = s.entry
-                        addMarker(curBi, s.entry, 8, "TP1 (38%) ✔ · حدضرر = سر‌به‌سر")
-                        lg("TRADE", "TP1 (۳۸٪) لمس شد → حدضرر به سر‌به‌سر منتقل شد · ستاپ #${s.id}",
-                            "tp1=${f2(s.tp1)} bar=$curBi")
-                        alarm(AlertKind.TP1, "TP1 (۳۸٪) لمس شد", "ستاپ #${s.id} · حدضرر به سر‌به‌سر منتقل شد · ${f2(s.tp1)}")
-                    } else if (s.be && !s.tp2Hit && !s.tp2.isNaN() && low <= s.tp2) {
-                        s.tp2Hit = true
-                        addMarker(curBi, s.tp2, 8, "TP2 (50%) ✔")
-                        lg("TRADE", "TP2 (۵۰٪) لمس شد · ستاپ #${s.id}", "tp2=${f2(s.tp2)} bar=$curBi")
-                        alarm(AlertKind.TP2, "TP2 (۵۰٪) لمس شد", "ستاپ #${s.id} · قیمت ${f2(s.tp2)}")
-                    } else if (s.be && high >= s.entry) { done = true; px = s.entry; note = "خروج سر‌به‌سر" }
+                    else {
+                        if (!s.be && !s.tp1.isNaN() && low <= s.tp1) {
+                            s.be = true; s.sl = s.entry
+                            addMarker(curBi, s.entry, 8, "TP1 (38%) ✔ · حدضرر = سر‌به‌سر")
+                            lg("TRADE", "TP1 (۳۸٪) لمس شد → حدضرر به سر‌به‌سر منتقل شد · ستاپ #${s.id}",
+                                "tp1=${f2(s.tp1)} bar=$curBi")
+                            alarm(AlertKind.TP1, "TP1 (۳۸٪) لمس شد", "ستاپ #${s.id} · حدضرر به سر‌به‌سر منتقل شد · ${f2(s.tp1)}")
+                        }
+                        if (s.be && !s.tp2Hit && !s.tp2.isNaN() && low <= s.tp2) {
+                            s.tp2Hit = true
+                            addMarker(curBi, s.tp2, 8, "TP2 (50%) ✔")
+                            lg("TRADE", "TP2 (۵۰٪) لمس شد · ستاپ #${s.id}", "tp2=${f2(s.tp2)} bar=$curBi")
+                            alarm(AlertKind.TP2, "TP2 (۵۰٪) لمس شد", "ستاپ #${s.id} · قیمت ${f2(s.tp2)}")
+                        }
+                        if (s.be && high >= s.entry) { done = true; px = s.entry; note = "خروج سر‌به‌سر" }
+                    }
                 }
                 if (done) {
                     s.stage = 8
@@ -840,6 +873,18 @@ class Engine(val cfg: Settings) {
             if (s.tp1.isNaN() || s.tp1 >= eRef) s.tp1 = eRef - (eRef - s.tpx) * 0.382
             if (s.tp2.isNaN() || s.tp2 >= eRef) s.tp2 = eRef - (eRef - s.tpx) * 0.5
         }
+        //  ⚠ فقط اگر کارگزار واقعاً سفارش را ثبت کرد به stage=6 می‌رویم.
+        //  اگر registerLimit به‌خاطر وجود سفارش/پوزیشن باز رد شد (قانون «فقط یک سفارش هم‌زمان»)،
+        //  ستاپ در stage=5 می‌ماند و اسکن ادامه می‌دهد تا بعداً دوباره تلاش شود.
+        //  این از «ورود شبح» جلوگیری می‌کند (موتور stage=7 می‌شد ولی کارگزار هیچ سفارشی نداشت).
+        val registered = broker?.registerLimit(s, cd) == true
+        if (!registered) {
+            //  رد شد — کندل HV را ریست می‌کنیم تا وقتی سفارش فعلی تمام شد دوباره اسکن کند.
+            s.hvBi = -1; s.runMax = Double.NaN
+            lg("ENGINE", "ثبت سفارش برای ستاپ #${s.id} رد شد (${broker?.lastError}) — کندل HV ریست شد",
+                "bar=$curBi")
+            return
+        }
         s.stage = 6
         cnt.hv++
         s.hvConfBi = curBi
@@ -852,7 +897,6 @@ class Engine(val cfg: Settings) {
             "dir=${if (bull) "BUY" else "SELL"} ورود=${f2(eRef)} SL=${f2(s.sl)} TP1=${f2(s.tp1)} TP2=${f2(s.tp2)} TP=${f2(s.tpx)} bar=$curBi")
         alarm(AlertKind.HV, "ناحیهٔ ولوم زیاد تایید شد",
             "ستاپ #${s.id} (" + (if (bull) "خرید" else "فروش") + ") · ورود ${f2(eRef)} · حدضرر ${f2(s.sl)} · حدسود ${f2(s.tpx)}")
-        broker?.registerLimit(s, cd)
     }
 
     // ── ابزارها ────────────────────────────────────────────────────────────────
