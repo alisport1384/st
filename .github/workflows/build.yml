@@ -154,6 +154,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # بیت اجرایی `gradlew` را تضمین کن. بدون این، اگر کامیتی بیت را از دست بدهد
+      # (اتفاقی که در e90c0fe/a1c30ee افتاد و هر دو جاب با exit 126 شکست کرد)
+      # کل بیلد با «Permission denied» می‌میرد.
+      - name: Ensure gradlew is executable
+        run: chmod +x gradlew
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
