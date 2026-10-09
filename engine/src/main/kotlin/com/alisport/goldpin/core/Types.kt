@@ -33,7 +33,7 @@ class Agg {
         closedNow = false
         if (isNew) {
             val c0 = cur
-            if (periods >= 2 && c0 != null) {
+            if (periods >= 1 && c0 != null) {
                 cl = Candle(c0.bi, c0.t, c0.o, c0.h, c0.l, c0.c, c0.v)
                 closedNow = true
             }

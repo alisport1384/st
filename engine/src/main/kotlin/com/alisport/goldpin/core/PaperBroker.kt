@@ -111,8 +111,8 @@ class PaperBroker(private val cfg: Settings) {
         order.closedT = t
         if (pending?.id == order.id) pending = null
         if (open?.orderId == order.id && open?.open == true) {
-            // بستن اجباری پوزیشن باز
-            closeAll(open!!, order.price, t, bi, "خروج همگام (ابطال ستاپ)")
+            // ۷-۲: معاملهٔ باز هرگز به‌زور بسته نمی‌شود — فقط سیستم مدیریتش می‌کند
+            lg("ORDER", "⚠ لغو روی معاملهٔ باز — بسته نشد", "id=${order.id}")
         }
     }
 
