@@ -333,9 +333,11 @@ class Engine(val cfg: Settings) {
         // ── چرخهٔ عمر کاندیدها : ابطال / Ready ──
         for (p in pins) {
             if (p.status == 0 && sb.bi > p.startBi) {
-                // ابطال فقط با **بسته شدن** کندل، نه با باز شدن آن.
-                // پیش‌تر `sb.o` هم چک می‌شد که باعث ابطال زودهنگام کاندید می‌شد.
-                val dead = if (p.kind == 1) (sb.c <= p.ref) else (sb.c >= p.ref)
+                // ابطال فقط با **بسته شدن آن‌طرف** کندل، نه با باز شدن آن و نه با تساوی.
+                // پیش‌تر `sb.o` هم چک می‌شد و نیز از <= / >= استفاده می‌شد که باعث
+                // ابطال زودهنگام کاندید در کلوز دقیقاً روی ref می‌گشت. §2-2 اکید است:
+                // فقط «رد شدن» (b.c < ref / b.c > ref) کاندید را می‌کشد.
+                val dead = if (p.kind == 1) (sb.c < p.ref) else (sb.c > p.ref)
                 if (dead) p.status = -1
                 else {
                     val rdy = if (p.kind == 1) sb.c > p.hi else sb.c < p.lo

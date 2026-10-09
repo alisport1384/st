@@ -140,7 +140,6 @@ object VolumeProfile {
             val stepDir = if (bull) 1 else -1
             var i = if (bull) 0 else rows - 1
             var guard = 0
-            var firstPass = true
             while (guard < 4 * rows && out.size < 2) {
                 guard++
                 // ① صعود به سمت قلهٔ محلی در جهت حرکت
@@ -151,44 +150,45 @@ object VolumeProfile {
                 //   10,20,30,40,50,50,50,40,30,20,20,20 → pk=اندیس ۶ (آخرین ۵۰).
                 var pk = -1
                 var j = i
-                while (j + stepDir >= 0 && j + stepDir <= rows - 1) {
-                    if (rv[j + stepDir] > rv[j]) j += stepDir else break
+                var climbed = false
+                // ① صعود به سمت قله: در حلقهٔ بیرونی تکرار می‌کنیم تا جایی که ردیف بعدی
+                //   اکیداً کوچک‌تر شود (یعنی نزول واقعاً شروع شده). درون هر چرخه:
+                //   (الف) تا جایی که ردیف بعد بزرگ‌تر است صعود می‌کنیم،
+                //   (ب) در فلات صعودی تا **آخرین** ردیف مساوی جلو می‌رویم
+                //       — قاعدهٔ «قله آخری».
+                while (true) {
+                    while (j + stepDir in 0..(rows - 1) && rv[j + stepDir] > rv[j]) {
+                        j += stepDir; climbed = true
+                    }
+                    while (j + stepDir in 0..(rows - 1) && rv[j + stepDir] == rv[j]) j += stepDir
+                    val nextGt = j + stepDir in 0..(rows - 1) && rv[j + stepDir] > rv[j]
+                    if (!nextGt) break
                 }
-                //   جلو رفتن روی فلات قله: تا وقتی ردیف بعدی مساوی‌ست قله ادامه دارد.
-                while (j + stepDir >= 0 && j + stepDir <= rows - 1 && rv[j + stepDir] == rv[j]) j += stepDir
+                //   قله = انتهای صعود (j) در صورتی که حرکت کرده باشیم. در غیر این صورت
+                //   (حتی یک گام هم جلو نرفته)، بررسی می‌کنیم که آیا در نقطهٔ شروع
+                //   یک قلهٔ تک‌ردیفه داریم یا نه — این قاعده فقط برای اولین پیمایش
+                //   نیست و بعد از هر دره نیز اعمال می‌شود (§۲-۴ تکرار بعد از دره).
                 if (j != i) pk = j
-                // ①-ب (§۲-۴، افزودهٔ ۱٫۳٫۸ — قاعدهٔ کارفرما):
-                // اگر **ردیف نخستِ پیمایش** از همان ابتدا بزرگ‌تر از ردیف بعدی باشد،
-                // همان ردیف قله است.
-                else if (firstPass) {
+                else {
                     val nx = i + stepDir
-                    if (nx in 0..rows - 1 && rv[nx] < rv[i]) pk = i
+                    if (nx in 0..(rows - 1) && rv[nx] < rv[i]) { pk = i; climbed = true }
                 }
-                firstPass = false
                 if (pk < 0) break
-                // ② اولین درهٔ محلی بعد از قله
-                //   دره اولین جایی است که حجم دیگر کمتر نمی‌شود. فلات نزولی را ادامه
-                //   نمی‌دهیم — دره همان اولین اندیس کمترین است (مطابق مثال: 20 در اندیس ۹).
+                //   اگر کل حرکت شامل هیچ افزایش اکیدی نبود (مثلاً پروفایل تخت یا
+                //   پیشروی فقط روی فلات)، قلهٔ واقعی نداریم.
+                if (!climbed) break
+                // ② اولین درهٔ محلی بعد از قله (قاعدهٔ «دره اولی»)
+                //   دره = جایی که حجم دیگر اکیداً کمتر نمی‌شود. فلات نزولی را ادامه
+                //   نمی‌دهیم — اولین نقطهٔ توقف، خودِ دره است.
                 var tr = -1
                 var k = pk
-                while (k + stepDir >= 0 && k + stepDir <= rows - 1) {
-                    if (rv[k + stepDir] < rv[k]) k += stepDir else break
-                }
+                while (k + stepDir in 0..(rows - 1) && rv[k + stepDir] < rv[k]) k += stepDir
                 if (k != pk) tr = k
-                //  ⚠ اگر بعد از قله دره‌ای پیدا نشد (یعنی همهٔ ردیف‌ها در جهت حرکت
-                //  یکسان یا بزرگ‌تر بودند — معمولاً در انتهای جدول)، قله تا انتهای جدول
-                //  را یک ناحیه می‌گیریم و حلقه تمام می‌شود.
-                val loIdx: Int
-                val hiIdx: Int
-                if (tr >= 0) {
-                    loIdx = min(pk, tr)
-                    hiIdx = max(pk, tr)
-                } else {
-                    // bull: pk قله‌است و دره پیدا نشد → تا انتهای بالا
-                    // bear: pk قله‌است و دره پیدا نشد (معمولاً مرز پایین) → تا انتهای پایین
-                    loIdx = if (bull) pk else 0
-                    hiIdx = if (bull) (rows - 1) else pk
-                }
+                //   دره پیدا نشد (لبهٔ جدول) — جست‌وجو تمام می‌شود
+                //   (ناحیهٔ یک‌ردیفه تا مرز جدول نسازیم).
+                if (tr < 0) break
+                val loIdx = min(pk, tr)
+                val hiIdx = max(pk, tr)
                 // ③ محدوده = از مرز پایین قله تا مرز بالای دره
                 val zBot = lo + loIdx * step
                 val zTop = lo + (hiIdx + 1) * step
@@ -198,8 +198,9 @@ object VolumeProfile {
                     val z = Zone(zTop, zBot, if (closeOK) out.size + 1 else rej.size + 1, loIdx, hiIdx)
                     if (closeOK) out.add(z) else rej.add(z)
                 }
-                //  ادامه پیمایش از یک ردیف بعد از دره (یا قله اگر دره پیدا نشد).
-                i = if (tr >= 0) tr + stepDir else pk + stepDir
+                //  ادامه پیمایش از یک ردیف بعد از دره — §۲-۴: بعد از هر دره الگوریتم
+                //  معمولی تکرار می‌شود تا حداکثر دو ناحیه پیدا شود.
+                i = tr + stepDir
             }
         }
         return if (wantRejected) rej else out

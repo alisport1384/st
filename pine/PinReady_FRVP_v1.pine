@@ -430,29 +430,39 @@ f_zones(Profile p, int rows, bool bull, float cClose, int minRows) =>
         while guard < 4 * rows and array.size(out) < 2
             guard += 1
             // ① اولین قله محلی در جهت حرکت
-            //   «قله آخری، دره اولی» — هماهنگ با Kotlin ۱٫۴٫۶.
+            //   «قله آخری، دره اولی»: حلقه بیرونی «صعود اکید → فلات» را تکرار می‌کند
+            //   تا ردیف بعد اکیداً کوچک‌تر شود. بعد از فلات در صورت صعود مجدد ادامه
+            //   می‌دهیم (مثلاً 20,20,20,30,50,50).
             int pk = -1
             int j = i
-            while j + stepDir >= 0 and j + stepDir <= rows - 1
-                if array.get(rv, j + stepDir) > array.get(rv, j)
+            bool climbed = false
+            bool done = false
+            while not done
+                while j + stepDir >= 0 and j + stepDir <= rows - 1 and array.get(rv, j + stepDir) > array.get(rv, j)
+                    j := j + stepDir; climbed := true
+                while j + stepDir >= 0 and j + stepDir <= rows - 1 and array.get(rv, j + stepDir) == array.get(rv, j)
                     j := j + stepDir
-                else
-                    break
-            //  جلو رفتن روی فلات قله (آخرین ردیف مساوی = قله)
-            while j + stepDir >= 0 and j + stepDir <= rows - 1 and array.get(rv, j + stepDir) == array.get(rv, j)
-                j := j + stepDir
+                bool nextUp = j + stepDir >= 0 and j + stepDir <= rows - 1 and array.get(rv, j + stepDir) > array.get(rv, j)
+                done := true
+                if nextUp
+                    done := false
             if j != i
                 pk := j
+            // قاعده قله تک‌ردیفه (هم در آغاز پیمایش، هم بعد از هر دره).
             if pk < 0
+                int nx = i + stepDir
+                if nx >= 0 and nx <= rows - 1 and array.get(rv, nx) < array.get(rv, i)
+                    pk := i; climbed := true
+            if pk < 0
+                break
+            //  اگر کل حرکت هیچ صعود اکید نداشت (مثل پروفایل تخت) قله واقعی نیست.
+            if not climbed
                 break
             // ② اولین دره محلی بعد از قله (دره اولین — فلات نزولی را ادامه نمی‌دهیم)
             int tr = -1
             int k = pk
-            while k + stepDir >= 0 and k + stepDir <= rows - 1
-                if array.get(rv, k + stepDir) < array.get(rv, k)
-                    k := k + stepDir
-                else
-                    break
+            while k + stepDir >= 0 and k + stepDir <= rows - 1 and array.get(rv, k + stepDir) < array.get(rv, k)
+                k := k + stepDir
             if k != pk
                 tr := k
             if tr < 0
@@ -660,7 +670,7 @@ if aggS.closedNow
         for i = 0 to array.size(pins) - 1
             Pin p = array.get(pins, i)
             if p.status == 0 and sb.bi > p.startBi
-                bool dead = p.kind == 1 ? (sb.o <= p.ref or sb.c <= p.ref) : (sb.o >= p.ref or sb.c >= p.ref)
+                bool dead = p.kind == 1 ? (sb.c < p.ref) : (sb.c > p.ref)
                 if dead
                     p.status := -1
                 else
