@@ -52,7 +52,7 @@ class Settings {
     var useRiskPct: Boolean = true
     var riskPct: Double = 1.0
     var equityPct: Double = 100.0
-    var maxLeverage: Double = 1.0
+    var maxLeverage: Double = 5.0
     var roundQty: Boolean = false
     var maxBarsToFill: Int = 150
     var contractSize: Double = 1.0

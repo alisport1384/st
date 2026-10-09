@@ -56,7 +56,7 @@ string hvMarkMode = input.string("FirstIncrease | اولین افزایش حجم
 
 string qtyMode = input.string("Risk % | ریسک ثابت", "روش تعیین حجم", options = ["Risk % | ریسک ثابت", "Equity % | درصد سرمایه"], group = "⑤ Backtest | بک‌تست")
 float riskPct  = input.float(1.0, "ریسک هر معامله (٪ سرمایه)", minval = 0.01, maxval = 100.0, step = 0.1, group = "⑤ Backtest | بک‌تست")
-float maxLeverage = input.float(1.0, "حداکثر اهرم مجاز (برای محدود کردن حجم)", minval = 0.1, maxval = 100.0, step = 0.1, group = "⑤ Backtest | بک‌تست", tooltip = "حجم را طوری محدود می‌کند که سفارش به دلیل کمبود مارجین رد نشود. ۱ = بدون اهرم")
+float maxLeverage = input.float(5.0, "حداکثر اهرم مجاز (برای محدود کردن حجم)", minval = 0.1, maxval = 100.0, step = 0.1, group = "⑤ Backtest | بک‌تست", tooltip = "حجم را طوری محدود می‌کند که سفارش به دلیل کمبود مارجین رد نشود. پیش‌فرض ۵ برای طلای XAUUSD مناسب است.")
 float qtyPct   = input.float(100.0, "درصد سرمایه در حالت Equity %", minval = 1.0, maxval = 100.0, group = "⑤ Backtest | بک‌تست")
 bool  roundQty = input.bool(false, "گرد کردن حجم به عدد صحیح", group = "⑤ Backtest | بک‌تست")
 int   maxBarsToFill = input.int(150, "لغو اوردر اگر تا N کندل پر نشد", minval = 5, group = "⑤ Backtest | بک‌تست")
@@ -464,6 +464,7 @@ f_zones(Profile p, int rows, bool bull, float cClose, int minRows) =>
         while guard < 4 * rows and array.size(out) < 2
             guard += 1
             // ① اولین قله محلی در جهت حرکت
+            //   «قله آخری، دره اولی»: صعود اکید، بعد روی فلات قله تا آخرین ردیف مساوی جلو می‌رویم.
             int pk = -1
             int j = i
             while j + stepDir >= 0 and j + stepDir <= rows - 1
@@ -471,11 +472,14 @@ f_zones(Profile p, int rows, bool bull, float cClose, int minRows) =>
                     j := j + stepDir
                 else
                     break
+            //  جلو رفتن روی فلات قله
+            while j + stepDir >= 0 and j + stepDir <= rows - 1 and array.get(rv, j + stepDir) == array.get(rv, j)
+                j := j + stepDir
             if j != i
                 pk := j
             if pk < 0
                 break
-            // ② اولین دره محلی بعد از قله
+            // ② اولین دره محلی بعد از قله — فلات نزولی را ادامه نمی‌دهیم (دره اولین است).
             int tr = -1
             int k = pk
             while k + stepDir >= 0 and k + stepDir <= rows - 1

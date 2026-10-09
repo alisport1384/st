@@ -430,6 +430,7 @@ f_zones(Profile p, int rows, bool bull, float cClose, int minRows) =>
         while guard < 4 * rows and array.size(out) < 2
             guard += 1
             // ① اولین قله محلی در جهت حرکت
+            //   «قله آخری، دره اولی» — هماهنگ با Kotlin ۱٫۴٫۶.
             int pk = -1
             int j = i
             while j + stepDir >= 0 and j + stepDir <= rows - 1
@@ -437,11 +438,14 @@ f_zones(Profile p, int rows, bool bull, float cClose, int minRows) =>
                     j := j + stepDir
                 else
                     break
+            //  جلو رفتن روی فلات قله (آخرین ردیف مساوی = قله)
+            while j + stepDir >= 0 and j + stepDir <= rows - 1 and array.get(rv, j + stepDir) == array.get(rv, j)
+                j := j + stepDir
             if j != i
                 pk := j
             if pk < 0
                 break
-            // ② اولین دره محلی بعد از قله
+            // ② اولین دره محلی بعد از قله (دره اولین — فلات نزولی را ادامه نمی‌دهیم)
             int tr = -1
             int k = pk
             while k + stepDir >= 0 and k + stepDir <= rows - 1
