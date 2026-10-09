@@ -3,7 +3,7 @@
 [![Build APK](https://github.com/alisport1384/st/actions/workflows/build.yml/badge.svg)](https://github.com/alisport1384/st/actions/workflows/build.yml)
 
 **نسخهٔ ۱٫۴٫۰** — چارت TradingView-وار (زوم دو انگشتی + تمام‌صفحه)، لاگر کامل (`md` + `txt`)،
-هشدار «سفارش مسلح شد» و مستندات کامل ساخت از صفر تا صد در پوشهٔ [`docs/`](docs/README_FA.md).
+هشدار «سفارش مسلح شد» و مستندات کامل ساخت از صفر تا صد در پوشهٔ [`docs/`](docs/00_OVERVIEW_FA.md).
 
 اپ اندروید برای **چارت‌کشی، بک‌تست و تست زندهٔ کاغذی** استراتژی PinReady روی طلا.
 همهٔ محاسبات داخل خود گوشی انجام می‌شود؛ هیچ سرور واسطی وجود ندارد و هیچ کلید API لازم نیست.
