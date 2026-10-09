@@ -140,6 +140,7 @@ object VolumeProfile {
             val stepDir = if (bull) 1 else -1
             var i = if (bull) 0 else rows - 1
             var guard = 0
+            var firstPass = true
             while (guard < 4 * rows && out.size < 2) {
                 guard++
                 // ① اولین قلهٔ محلی در جهت حرکت
@@ -149,6 +150,20 @@ object VolumeProfile {
                     if (rv[j + stepDir] > rv[j]) j += stepDir else break
                 }
                 if (j != i) pk = j
+                // ①-ب (§۲-۴، افزودهٔ ۱٫۳٫۸ — قاعدهٔ کارفرما):
+                // اگر **ردیف نخستِ پیمایش** (لبهٔ کندل: سقف در نزولی، کف در صعودی) از همان
+                // ابتدا بزرگ‌تر از ردیف بعدیِ خودش باشد، یعنی قبلش هیچ ردیف بزرگ‌تری نیست و
+                // همان ردیف قله است. در این حالت **لبهٔ کندل** شروع ناحیه می‌شود:
+                //   نزولی → سقف کندل · صعودی → کف کندل
+                // چون `zTop = lo + (hiIdx + 1) * step` است، `hiIdx = rows - 1` خودش `hi`
+                // (سقف کندل) را می‌دهد و `loIdx = 0` خودش `lo` (کف کندل) را.
+                // ⚠ فقط در پاس اول: در پاس‌های بعد `i` وسط جدول است و کوچک‌بودن ردیف بعدی
+                // معنای «قله» ندارد.
+                else if (firstPass) {
+                    val nx = i + stepDir
+                    if (nx in 0..rows - 1 && rv[nx] < rv[i]) pk = i
+                }
+                firstPass = false
                 if (pk < 0) break
                 // ② اولین درهٔ محلی بعد از قله
                 var tr = -1
