@@ -116,12 +116,21 @@ class PaperBroker(private val cfg: Settings) {
         }
     }
 
+    /**
+     * ستاپ باطل شد.
+     *
+     * docs/19 بند ۵-۳ — **تصمیم کارفرما**: «خودِ سفارش‌های باز مسئول تصمیم‌گیری هستند؛
+     * سیستم فقط مدیریتشان می‌کند.»
+     *
+     * پس سفارش **معلق** لغو می‌شود (چون هنوز وارد نشده و ستاپش مرده)، ولی معاملهٔ
+     * **پر‌شده هرگز به‌زور بسته نمی‌شود**. تا تعیین تکلیف خودش می‌رود: همهٔ حد سودها،
+     * سر‌به‌سر، یا حد ضرر.
+     *
+     * ⚠ پیش‌تر این متد معاملهٔ باز را هم می‌بست («خروج همگام»). آن رفتار حذف شد.
+     */
     fun onSetupInvalidated(s: Setup) {
         val o = orders.firstOrNull { it.id == s.orderId } ?: return
         if (o.status == OrderStatus.PENDING) cancel(o, "ستاپ باطل شد", o.placedT, o.placedBi)
-        else if (o.status == OrderStatus.FILLED && open?.orderId == o.id && open?.open == true) {
-            closeAll(open!!, o.price, o.placedT, o.placedBi, "خروج همگام (ابطال ستاپ)")
-        }
     }
 
     /** بازگردانی سفارش معلق از فایل ذخیره‌شده */

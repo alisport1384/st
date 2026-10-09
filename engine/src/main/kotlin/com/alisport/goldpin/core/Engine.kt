@@ -102,6 +102,17 @@ class Engine(val cfg: Settings) {
     var lowestBUpin = Double.NaN; var highestBE = Double.NaN
     var lastBUpin = Double.NaN; var lastBEpin = Double.NaN
 
+    // ── docs/19: چرخهٔ عمر پین‌ها و روندِ توالی‌محور ────────────────────────────
+    /** `lastBUpin`/`lastBEpin` **سطح** هستند و حتی بعد از ابطال پین باقی می‌مانند
+     *  (بند ۵-۱: پینِ حذف‌شده تا تشکیل پین جدید نقش HL/LH را نگه می‌دارد).
+     *  `buActive`/`beActive` می‌گویند آیا پین هنوز **معتبر** است. */
+    var buActive = false; var beActive = false
+    /** شمارهٔ توالی: با هر پینِ تاییدشده یکی زیاد می‌شود تا بدانیم کدام بعد از کدام آمده. */
+    var pinSeq = 0; var buSeq = -1; var beSeq = -1
+    /** `ref` و لبهٔ دیگرِ کندل مهم — برای بند ۳ (ابطال بعد از Ready). */
+    var lastBUpinRef = Double.NaN; var lastBUpinHi = Double.NaN
+    var lastBEpinRef = Double.NaN; var lastBEpinLo = Double.NaN
+
     var lastZoneTop = Double.NaN; var lastZoneBot = Double.NaN
     var lastPocPx = Double.NaN; var lastProfBars = 0
     var profileOnLastS: Profile? = null
@@ -154,6 +165,10 @@ class Engine(val cfg: Settings) {
         bearBE1High = Double.NaN; bearBULow = Double.NaN; bearBE2High = Double.NaN; bearBE2Bi = -1
         bullSetup = false; bearSetup = false; expectedReady = 0
         lowestBUpin = Double.NaN; highestBE = Double.NaN; lastBUpin = Double.NaN; lastBEpin = Double.NaN
+        buActive = false; beActive = false
+        pinSeq = 0; buSeq = -1; beSeq = -1
+        lastBUpinRef = Double.NaN; lastBUpinHi = Double.NaN
+        lastBEpinRef = Double.NaN; lastBEpinLo = Double.NaN
         lastZoneTop = Double.NaN; lastZoneBot = Double.NaN; lastPocPx = Double.NaN; lastProfBars = 0
         profileOnLastS = null
         lastEntryPx = Double.NaN; lastSlPx = Double.NaN; lastTpPx = Double.NaN
@@ -337,25 +352,17 @@ class Engine(val cfg: Settings) {
                     val pBU = pins[iBU]
                     if (!hasBetterActive(pins, 1, pBU.lo)) {
                         lastBUpin = pBU.lo
+                        lastBUpinRef = pBU.ref; lastBUpinHi = pBU.hi
+                        buActive = true; buSeq = ++pinSeq
                         lowestBUpin = if (lowestBUpin.isNaN()) pBU.lo else min(lowestBUpin, pBU.lo)
                         addMarker(pBU.impBi, pBU.lo, 1, "کندل مهم پایین‌ترین\nReady BU · pinBU")
                         lg("ENGINE", "Ready BU (pinBU) تایید شد", "lo=${f2(pBU.lo)} hi=${f2(pBU.hi)} bar=${sb.bi}")
                         alarm(AlertKind.PIN, "کندل مهم · Ready BU",
                             "کف ${f2(pBU.lo)} — کندل مهم پایین‌ترین‌ها تایید شد (${Tf.label(cfg.tfS)})")
-                        // §۲-۳ (اصلاح‌شده ۱٫۳٫۷): الگوی «دو کف صعودی BU1 < BU2» **حذف شد**.
-                        // دلیل: BU1 فقط یک‌بار و برای همیشه ثبت می‌شد (seqStart هیچ‌وقت به ۰
-                        // برنمی‌گشت) و کل تشخیص روند یک‌بارمصرف می‌شد.
-                        // قاعدهٔ جدید کارفرما: خودِ pinBU پایهٔ روند صعودی است و چرخش روند
-                        // فقط با «کلوز زیر کف نزدیک‌ترین pinBU» رخ می‌دهد (پایین‌تر، بلوک روند).
-                        when (trend) {
-                            0 -> {
-                                trend = 1; HH = sb.c; HL = pBU.lo
-                                lg("ENGINE", "روند صعودی تثبیت شد", "pinBU=${f2(pBU.lo)} close=${f2(sb.c)}")
-                                alarm(AlertKind.TREND, "روند صعودی شد",
-                                    "pinBU ${f2(pBU.lo)} · کلوز=${f2(sb.c)}")
-                            }
-                            1 -> HL = pBU.lo
-                        }
+                        // docs/19 بند ۵-۲: `pinBU` به‌تنهایی روند **نمی‌سازد**.
+                        // روند فقط با **توالی** تشکیل می‌شود (پایین‌تر، بلوک روند).
+                        // در روند صعودی، کف pinBU همان HL است.
+                        if (trend == 1) HL = pBU.lo
                         expectedReady = -1
                         pins.clear()
                     }
@@ -367,22 +374,15 @@ class Engine(val cfg: Settings) {
                     val pBE = pins[iBE]
                     if (!hasBetterActive(pins, -1, pBE.hi)) {
                         lastBEpin = pBE.hi
+                        lastBEpinRef = pBE.ref; lastBEpinLo = pBE.lo
+                        beActive = true; beSeq = ++pinSeq
                         highestBE = if (highestBE.isNaN()) pBE.hi else max(highestBE, pBE.hi)
                         addMarker(pBE.impBi, pBE.hi, -1, "کندل مهم بالاترین\nReady BE · pinBE")
                         lg("ENGINE", "Ready BE (pinBE) تایید شد", "hi=${f2(pBE.hi)} lo=${f2(pBE.lo)} bar=${sb.bi}")
                         alarm(AlertKind.PIN, "کندل مهم · Ready BE",
                             "سقف ${f2(pBE.hi)} — کندل مهم بالاترین‌ها تایید شد (${Tf.label(cfg.tfS)})")
-                        // §۲-۳ (اصلاح‌شده ۱٫۳٫۷): قرینهٔ سمت نزولی — خودِ pinBE پایهٔ روند
-                        // نزولی است و چرخش فقط با «کلوز بالای سقف نزدیک‌ترین pinBE» رخ می‌دهد.
-                        when (trend) {
-                            0 -> {
-                                trend = -1; LL = sb.c; LH = pBE.hi
-                                lg("ENGINE", "روند نزولی تثبیت شد", "pinBE=${f2(pBE.hi)} close=${f2(sb.c)}")
-                                alarm(AlertKind.TREND, "روند نزولی شد",
-                                    "pinBE ${f2(pBE.hi)} · کلوز=${f2(sb.c)}")
-                            }
-                            -1 -> LH = pBE.hi
-                        }
+                        // docs/19 بند ۵-۲: `pinBE` هم به‌تنهایی روند نمی‌سازد.
+                        if (trend == -1) LH = pBE.hi
                         expectedReady = 1
                         pins.clear()
                     }
@@ -390,34 +390,93 @@ class Engine(val cfg: Settings) {
             }
         }
 
+        // ── ابطال پین **بعد از** Ready (docs/19 بند ۳) ──
+        // اگر باز **یا** کلوز آن‌طرف `ref` برود، **ولی** کلوز پایین‌تر از کف کندل مهم
+        // بسته نشود ⇒ کندل مهم و pinBU حذف می‌شوند و مجدد سنجیده می‌شوند.
+        // ⚠ سطح `lastBUpin` دست‌نخورده می‌ماند — بند ۵-۱: پینِ حذف‌شده تا تشکیل پین
+        //    جدید نقش HL را برای تغییر روند نگه می‌دارد.
+        if (buActive && !lastBUpinRef.isNaN() && sb.bi > 0) {
+            val crossed = sb.o < lastBUpinRef || sb.c < lastBUpinRef
+            val closedBelowLow = !lastBUpin.isNaN() && sb.c < lastBUpin
+            if (crossed && !closedBelowLow) {
+                buActive = false
+                addMarker(sb.bi, lastBUpin, 10, "pinBU بی‌اعتبار شد (کلوز/باز زیر ref)")
+                lg("ENGINE", "pinBU بی‌اعتبار و حذف شد — مجدد سنجیده می‌شود",
+                    "ref=${f2(lastBUpinRef)} lo=${f2(lastBUpin)} close=${f2(sb.c)} open=${f2(sb.o)}")
+            }
+        }
+        // قرینه: pinBE
+        if (beActive && !lastBEpinRef.isNaN() && sb.bi > 0) {
+            val crossed = sb.o > lastBEpinRef || sb.c > lastBEpinRef
+            val closedAboveHigh = !lastBEpin.isNaN() && sb.c > lastBEpin
+            if (crossed && !closedAboveHigh) {
+                beActive = false
+                addMarker(sb.bi, lastBEpin, 10, "pinBE بی‌اعتبار شد (کلوز/باز بالای ref)")
+                lg("ENGINE", "pinBE بی‌اعتبار و حذف شد — مجدد سنجیده می‌شود",
+                    "ref=${f2(lastBEpinRef)} hi=${f2(lastBEpin)} close=${f2(sb.c)} open=${f2(sb.o)}")
+            }
+        }
+
         // ── تعیین / ادامه / تغییر روند (فقط با کلوز کندل ساختار) ──
         var evTrendUp = false; var evTrendDn = false
         var evChgUp = false; var evChgDn = false
         when (trend) {
-            // روند هنوز تشکیل نشده — با اولین pinBU یا pinBE تشکیل می‌شود (بلوک‌های بالا).
-            0 -> { }
+            // ── docs/19 بند ۵-۲: در اول چارت هیچ روندی معلوم نیست؛ منتظر **توالی** می‌مانیم.
+            //    توالی یعنی هر دو pinBU و pinBE وجود داشته باشند. آنگاه:
+            //      کلوز بالای سقف pinBE ⇒ روند صعودی · کلوز زیر کف pinBU ⇒ روند نزولی
+            //    (هر چهار ترکیبِ ترتیبِ کارفرما به همین دو قاعده فرومی‌کاهد.)
+            0 -> {
+                if (!lastBUpin.isNaN() && !lastBEpin.isNaN()) {
+                    if (sb.c > lastBEpin) {
+                        trend = 1; HH = lastBEpin; HL = lastBUpin; evTrendUp = true
+                        lg("ENGINE", "روند صعودی تثبیت شد (توالی)",
+                            "pinBE=${f2(lastBEpin)} pinBU=${f2(lastBUpin)} close=${f2(sb.c)}")
+                        alarm(AlertKind.TREND, "روند صعودی شد",
+                            "توالی کامل · کلوز ${f2(sb.c)} بالای سقف pinBE ${f2(lastBEpin)}")
+                    } else if (sb.c < lastBUpin) {
+                        trend = -1; LL = lastBUpin; LH = lastBEpin; evTrendDn = true
+                        lg("ENGINE", "روند نزولی تثبیت شد (توالی)",
+                            "pinBU=${f2(lastBUpin)} pinBE=${f2(lastBEpin)} close=${f2(sb.c)}")
+                        alarm(AlertKind.TREND, "روند نزولی شد",
+                            "توالی کامل · کلوز ${f2(sb.c)} زیر کف pinBU ${f2(lastBUpin)}")
+                    }
+                }
+            }
             1 -> {
                 if (sb.c > HH) HH = sb.c
-                // §۲-۳ (اصلاح‌شده ۱٫۳٫۷): در روند صعودی، اگر کندلی **زیر کف نزدیک‌ترین
-                // pinBU** بسته شود، چرخش روند رخ می‌دهد و روند از صعودی به نزولی تبدیل می‌شود.
                 if (!lastBUpin.isNaN() && sb.c < lastBUpin) {
-                    trend = -1; LL = sb.c; LH = HH; evChgDn = true
-                    lg("ENGINE", "چرخش روند به نزولی (کلوز زیر pinBU)",
-                        "pinBU=${f2(lastBUpin)} close=${f2(sb.c)}")
-                    alarm(AlertKind.TREND, "چرخش روند به نزولی",
-                        "کلوز ${f2(sb.c)} زیر کف pinBU ${f2(lastBUpin)} بسته شد")
+                    // docs/19 بند ۲: چرخش روند نیاز به **توالی** دارد — باید بعد از آن
+                    // pinBU یک pinBE هم شکل گرفته باشد (beSeq > buSeq).
+                    if (beSeq > buSeq) {
+                        trend = -1; LL = sb.c; LH = HH; evChgDn = true
+                        lg("ENGINE", "چرخش روند به نزولی (کلوز زیر pinBU · توالی کامل)",
+                            "pinBU=${f2(lastBUpin)} close=${f2(sb.c)}")
+                        alarm(AlertKind.TREND, "چرخش روند به نزولی",
+                            "کلوز ${f2(sb.c)} زیر کف pinBU ${f2(lastBUpin)} بسته شد")
+                    } else if (buActive) {
+                        // بدون pinBE بعدی ⇒ روند تغییر نمی‌کند، فقط pinBU بی‌اعتبار می‌شود.
+                        buActive = false
+                        addMarker(sb.bi, lastBUpin, 10, "pinBU بی‌اعتبار شد (بدون توالی)")
+                        lg("ENGINE", "کلوز زیر pinBU ولی توالی کامل نبود — فقط pinBU حذف شد، روند دست نخورد",
+                            "pinBU=${f2(lastBUpin)} close=${f2(sb.c)} buSeq=$buSeq beSeq=$beSeq")
+                    }
                 }
             }
             -1 -> {
                 if (sb.c < LL) LL = sb.c
-                // §۲-۳ (اصلاح‌شده ۱٫۳٫۷): در روند نزولی، اگر کندلی **بالای سقف نزدیک‌ترین
-                // pinBE** بسته شود، چرخش روند رخ می‌دهد و روند از نزولی به صعودی تغییر می‌کند.
                 if (!lastBEpin.isNaN() && sb.c > lastBEpin) {
-                    trend = 1; HH = sb.c; HL = LL; evChgUp = true
-                    lg("ENGINE", "چرخش روند به صعودی (کلوز بالای pinBE)",
-                        "pinBE=${f2(lastBEpin)} close=${f2(sb.c)}")
-                    alarm(AlertKind.TREND, "چرخش روند به صعودی",
-                        "کلوز ${f2(sb.c)} بالای سقف pinBE ${f2(lastBEpin)} بسته شد")
+                    if (buSeq > beSeq) {
+                        trend = 1; HH = sb.c; HL = LL; evChgUp = true
+                        lg("ENGINE", "چرخش روند به صعودی (کلوز بالای pinBE · توالی کامل)",
+                            "pinBE=${f2(lastBEpin)} close=${f2(sb.c)}")
+                        alarm(AlertKind.TREND, "چرخش روند به صعودی",
+                            "کلوز ${f2(sb.c)} بالای سقف pinBE ${f2(lastBEpin)} بسته شد")
+                    } else if (beActive) {
+                        beActive = false
+                        addMarker(sb.bi, lastBEpin, 10, "pinBE بی‌اعتبار شد (بدون توالی)")
+                        lg("ENGINE", "کلوز بالای pinBE ولی توالی کامل نبود — فقط pinBE حذف شد، روند دست نخورد",
+                            "pinBE=${f2(lastBEpin)} close=${f2(sb.c)} buSeq=$buSeq beSeq=$beSeq")
+                    }
                 }
             }
         }
