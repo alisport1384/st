@@ -33,7 +33,14 @@ class Settings {
     var showPocVA: Boolean = true
 
     var maxSetups: Int = 6
-    var midInvalidClose: Boolean = true       // true=شکست با کلوز ، false=با سایه
+    /**
+     * `true`  ⇒ تایید میانی فقط با **بسته شدن** کندل میانی آن‌طرف سطح باطل می‌شود.
+     * `false` ⇒ با **عبور شمع** باطل می‌شود، حتی یک تیک و حتی اگر برگردد و آن‌طرف بسته نشود.
+     *
+     * پیش‌فرض پیشین `true` بود. مطابق قاعدهٔ کارفرما به `false` تغییر کرد: عبور، حتی
+     * یک تیک، تایید را باطل می‌کند.
+     */
+    var midInvalidClose: Boolean = false       // true=شکست با کلوز ، false=با سایه
     var hvScanFirstTouch: Boolean = true      // true=از اولین برگشت به باکس ولوم کم
     var hvMarkFirstIncrease: Boolean = true   // true=اولین افزایش حجم نسبت به کندل قبل ، false=RunningMax
     var rejectCandleNext: Boolean = false
@@ -286,14 +293,22 @@ class Engine(val cfg: Settings) {
             val b = structBars[nS - 1]
             if (a.c < a.o && b.c > b.o) {                       // کندل مهم در پایین‌ترین‌ها
                 val (impH, impL, impBi) = pickLow(a, b)
-                val refLo = min(a.c, b.o)
+                // سطح ابطال از **خودِ کندل مهم** گرفته می‌شود، نه از دو کندل مختلف.
+                // کندل مهم صعودی باشد (کلوز > اوپن) ⇒ ref = اوپن
+                // کندل مهم نزولی باشد (کلوز < اوپن) ⇒ ref = کلوز
+                // یعنی همیشه پایین‌ترِ دو لبهٔ بدنهٔ کندل مهم.
+                val impA = (impBi == a.bi)
+                val refLo = if (impA) min(a.c, a.o) else min(b.c, b.o)
                 pins.add(Pin(1, impH, impL, impBi, b.bi, refLo, 0))
                 lg("ENGINE", "کاندید کندل مهم پایین‌ترین‌ها ثبت شد",
                     "kind=BU hi=${f2(impH)} lo=${f2(impL)} ref=${f2(refLo)} bar=${b.bi}")
             }
             if (a.c > a.o && b.c < b.o) {                       // کندل مهم در بالاترین‌ها
                 val (impH2, impL2, impBi2) = pickHigh(a, b)
-                val refHi = max(a.c, b.o)
+                // قرینه: همیشه بالاترینِ دو لبهٔ بدنهٔ کندل مهم.
+                // کندل مهم صعودی ⇒ ref = کلوز · نزولی ⇒ ref = اوپن
+                val impA2 = (impBi2 == a.bi)
+                val refHi = if (impA2) max(a.c, a.o) else max(b.c, b.o)
                 pins.add(Pin(-1, impH2, impL2, impBi2, b.bi, refHi, 0))
                 lg("ENGINE", "کاندید کندل مهم بالاترین‌ها ثبت شد",
                     "kind=BE hi=${f2(impH2)} lo=${f2(impL2)} ref=${f2(refHi)} bar=${b.bi}")
@@ -303,8 +318,9 @@ class Engine(val cfg: Settings) {
         // ── چرخهٔ عمر کاندیدها : ابطال / Ready ──
         for (p in pins) {
             if (p.status == 0 && sb.bi > p.startBi) {
-                val dead = if (p.kind == 1) (sb.o <= p.ref || sb.c <= p.ref)
-                else (sb.o >= p.ref || sb.c >= p.ref)
+                // ابطال فقط با **بسته شدن** کندل، نه با باز شدن آن.
+                // پیش‌تر `sb.o` هم چک می‌شد که باعث ابطال زودهنگام کاندید می‌شد.
+                val dead = if (p.kind == 1) (sb.c <= p.ref) else (sb.c >= p.ref)
                 if (dead) p.status = -1
                 else {
                     val rdy = if (p.kind == 1) sb.c > p.hi else sb.c < p.lo
