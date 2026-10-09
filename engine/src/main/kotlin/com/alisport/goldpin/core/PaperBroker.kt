@@ -146,11 +146,20 @@ class PaperBroker(private val cfg: Settings) {
     /** پردازش کندل: پر شدن سفارش + مدیریت پوزیشن. */
     fun onBar(cd: Candle, live: Boolean = false) {
         // ① پر شدن سفارش لیمیت
+        //    ⚠ مطابق §۲-۸ سند: «سفارش ورود لیمیت روی لبه ناحیه ولوم زیاد ... هر کندل
+        //    دوباره صادر می‌شود تا پر شود یا مهلت تمام شود.» سفارش در همان کندلی که
+        //    مسلح شده (hvConfBi == cd.bi) نباید پر شود — موتور در آن کندل تازه وارد
+        //    مرحله ۶ می‌شود و «برگشت» به لبه از کندل بعد شروع می‌شود. این با خودِ
+        //    موتور (trigger2Engine مرحله ۶ که curBi > hvConfBi می‌خواهد) هم‌خوان است.
+        //    بدون این guard، برای BUY limit اگر کندل HV confirmation کفی پایین‌تر یا
+        //    مساوی hvH داشته باشد، کارگزار در همان کندل پر می‌کند — خلاف «برگشت به
+        //    لبه».
         val p = pending
         if (p != null) {
             val touched = if (p.dir == 1) cd.l <= p.price else cd.h >= p.price
             val barsWaiting = cd.bi - p.placedBi
-            if (touched) {
+            val sameBarAsArmed = cd.bi == p.placedBi
+            if (touched && !sameBarAsArmed) {
                 fillEntry(p, cd)
             } else if (barsWaiting > cfg.maxBarsToFill) {
                 cancel(p, "مهلت پر شدن تمام شد ($barsWaiting کندل)", cd.t, cd.bi,

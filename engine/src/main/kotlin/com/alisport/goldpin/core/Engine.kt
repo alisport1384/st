@@ -573,12 +573,11 @@ class Engine(val cfg: Settings) {
                 lg("ENGINE", "تایید میانی انجام شد · ستاپ #${s.id}",
                     if (s.dir == 1) "کف تایید=${f2(s.midRef)} bar=${mc.bi}" else "سقف تایید=${f2(s.midRef)} bar=${mc.bi}")
                 addMarker(mc.bi, s.midRef, 3, if (s.dir == 1) "کف تایید میانی" else "سقف تایید میانی")
-            } else if (!s.midRef.isNaN() && s.markBi < 0) {
-                // ◆ مارک کردن کندل بعد از تایید (فقط نشانه)
-                s.markH = mc.h; s.markL = mc.l; s.markBi = mc.bi
-                if (s.stage == 2) s.stage = 3
             } else if (!s.midRef.isNaN()) {
-                // ✖ ابطال تایید میانی
+                // ✖ ابطال تایید میانی — قبل از مارک چک می‌شود، چون کندل مارک هم
+                //   می‌تواند (حتی در همان کندل پس از تایید، در پاس‌های بعدی) سطح را بشکند.
+                //   سند ۶-۱۲: هر عبور شمع، حتی یک تیک، تایید را باطل می‌کند — شامل کندل بعد
+                //   از تایید هم می‌شود (قبلاً این کندل از بررسی ابطال معاف بود).
                 val broken = if (cfg.midInvalidClose) {
                     if (s.dir == 1) mc.c < s.midRef else mc.c > s.midRef
                 } else {
@@ -593,6 +592,10 @@ class Engine(val cfg: Settings) {
                     s.lvTouched = false; s.lvUsed = false
                     addMarker(mc.bi, old, 10, "تایید میانی باطل شد")
                     lg("ENGINE", "تایید میانی باطل شد · ستاپ #${s.id}", "سطح قبلی=${f2(old)} bar=${mc.bi}")
+                } else if (s.markBi < 0) {
+                    // ◆ مارک کردن کندل بعد از تایید (فقط نشانه) — فقط اگر ابطال اتفاق نیفتاده باشد
+                    s.markH = mc.h; s.markL = mc.l; s.markBi = mc.bi
+                    if (s.stage == 2) s.stage = 3
                 }
             }
         }
