@@ -429,12 +429,16 @@ class Engine(val cfg: Settings) {
                 if (!lastBUpin.isNaN() && !lastBEpin.isNaN()) {
                     if (sb.c > lastBEpin) {
                         trend = 1; HH = lastBEpin; HL = lastBUpin; evTrendUp = true
+                        // ۷-۶: reset مراجع فیبو به سکانس جدید
+                        highestBE = lastBEpin; lowestBUpin = lastBUpin
                         lg("ENGINE", "روند صعودی تثبیت شد (توالی)",
                             "pinBE=${f2(lastBEpin)} pinBU=${f2(lastBUpin)} close=${f2(sb.c)}")
                         alarm(AlertKind.TREND, "روند صعودی شد",
                             "توالی کامل · کلوز ${f2(sb.c)} بالای سقف pinBE ${f2(lastBEpin)}")
                     } else if (sb.c < lastBUpin) {
                         trend = -1; LL = lastBUpin; LH = lastBEpin; evTrendDn = true
+                        // ۷-۶: reset مراجع فیبو به سکانس جدید
+                        highestBE = lastBEpin; lowestBUpin = lastBUpin
                         lg("ENGINE", "روند نزولی تثبیت شد (توالی)",
                             "pinBU=${f2(lastBUpin)} pinBE=${f2(lastBEpin)} close=${f2(sb.c)}")
                         alarm(AlertKind.TREND, "روند نزولی شد",
@@ -448,7 +452,11 @@ class Engine(val cfg: Settings) {
                     // docs/19 بند ۲: چرخش روند نیاز به **توالی** دارد — باید بعد از آن
                     // pinBU یک pinBE هم شکل گرفته باشد (beSeq > buSeq).
                     if (beSeq > buSeq) {
-                        trend = -1; LL = sb.c; LH = HH; evChgDn = true
+                        // سند: LL = کف pinBU (همان lastBUpin که شکسته شد) و LH = HH
+                        // (قبلاً LL = sb.c بود که بیرون سطح بود و درست نبود)
+                        trend = -1; LL = lastBUpin; LH = HH; evChgDn = true
+                        // ۷-۶: reset مراجع فیبو به سکانس جدید
+                        highestBE = HH; lowestBUpin = lastBUpin
                         lg("ENGINE", "چرخش روند به نزولی (کلوز زیر pinBU · توالی کامل)",
                             "pinBU=${f2(lastBUpin)} close=${f2(sb.c)}")
                         alarm(AlertKind.TREND, "چرخش روند به نزولی",
@@ -466,7 +474,11 @@ class Engine(val cfg: Settings) {
                 if (sb.c < LL) LL = sb.c
                 if (!lastBEpin.isNaN() && sb.c > lastBEpin) {
                     if (buSeq > beSeq) {
-                        trend = 1; HH = sb.c; HL = LL; evChgUp = true
+                        // سند: HH = سقف pinBE (همان lastBEpin که شکسته شد) و HL = LL
+                        // (قبلاً HH = sb.c بود که بیرون سطح بود و درست نبود)
+                        trend = 1; HH = lastBEpin; HL = LL; evChgUp = true
+                        // ۷-۶: reset مراجع فیبو به سکانس جدید
+                        highestBE = lastBEpin; lowestBUpin = LL
                         lg("ENGINE", "چرخش روند به صعودی (کلوز بالای pinBE · توالی کامل)",
                             "pinBE=${f2(lastBEpin)} close=${f2(sb.c)}")
                         alarm(AlertKind.TREND, "چرخش روند به صعودی",
@@ -746,6 +758,10 @@ class Engine(val cfg: Settings) {
             }
 
             // ⑤ مدیریت معامله : حدضرر / سر‌به‌سر / حدسود (بررسی موتور)
+            //   ترتیب محافظه‌کارانه، مطابق §۲-۹ و PaperBroker.manageBar:
+            //   SL → TPX → TP1 (be=true) → TP2 → BE
+            //   توجه: stage فقط در پایان واقعی (SL/TPX/BE) به ۸ می‌رود.
+            //   پله‌های میانی (TP1/TP2) استیج را جلو نمی‌برند چون هنوز بخشی از حجم باز است.
             if (s.stage == 7 && !s.sl.isNaN() && !s.tpx.isNaN()) {
                 var done = false
                 var px = Double.NaN
@@ -759,6 +775,11 @@ class Engine(val cfg: Settings) {
                         lg("TRADE", "TP1 (۳۸٪) لمس شد → حدضرر به سر‌به‌سر منتقل شد · ستاپ #${s.id}",
                             "tp1=${f2(s.tp1)} bar=$curBi")
                         alarm(AlertKind.TP1, "TP1 (۳۸٪) لمس شد", "ستاپ #${s.id} · حدضرر به سر‌به‌سر منتقل شد · ${f2(s.tp1)}")
+                    } else if (s.be && !s.tp2Hit && !s.tp2.isNaN() && high >= s.tp2) {
+                        s.tp2Hit = true
+                        addMarker(curBi, s.tp2, 8, "TP2 (50%) ✔")
+                        lg("TRADE", "TP2 (۵۰٪) لمس شد · ستاپ #${s.id}", "tp2=${f2(s.tp2)} bar=$curBi")
+                        alarm(AlertKind.TP2, "TP2 (۵۰٪) لمس شد", "ستاپ #${s.id} · قیمت ${f2(s.tp2)}")
                     } else if (s.be && low <= s.entry) { done = true; px = s.entry; note = "خروج سر‌به‌سر" }
                 } else {
                     if (high >= s.sl) { done = true; px = s.sl; note = if (s.be) "خروج سر‌به‌سر" else "حد ضرر" }
@@ -769,6 +790,11 @@ class Engine(val cfg: Settings) {
                         lg("TRADE", "TP1 (۳۸٪) لمس شد → حدضرر به سر‌به‌سر منتقل شد · ستاپ #${s.id}",
                             "tp1=${f2(s.tp1)} bar=$curBi")
                         alarm(AlertKind.TP1, "TP1 (۳۸٪) لمس شد", "ستاپ #${s.id} · حدضرر به سر‌به‌سر منتقل شد · ${f2(s.tp1)}")
+                    } else if (s.be && !s.tp2Hit && !s.tp2.isNaN() && low <= s.tp2) {
+                        s.tp2Hit = true
+                        addMarker(curBi, s.tp2, 8, "TP2 (50%) ✔")
+                        lg("TRADE", "TP2 (۵۰٪) لمس شد · ستاپ #${s.id}", "tp2=${f2(s.tp2)} bar=$curBi")
+                        alarm(AlertKind.TP2, "TP2 (۵۰٪) لمس شد", "ستاپ #${s.id} · قیمت ${f2(s.tp2)}")
                     } else if (s.be && high >= s.entry) { done = true; px = s.entry; note = "خروج سر‌به‌سر" }
                 }
                 if (done) {
@@ -815,6 +841,8 @@ class Engine(val cfg: Settings) {
         cnt.hv++
         s.hvConfBi = curBi
         s.entry = eRef
+        s.be = false
+        s.tp2Hit = false   // هر بار مسلح شدنِ تازه، پله‌ها از نو حساب می‌شوند
         addMarker(curBi, eRef, 7, if (bull) "مسلح برای خرید (Armed)" else "مسلح برای فروش (Armed)")
         events.add("[${s.id}] مسلح شد · ورود ${f2(eRef)} · SL ${f2(s.sl)} · TP ${f2(s.tpx)}")
         lg("ENGINE", "ناحیهٔ ولوم زیاد تایید شد → ستاپ مسلح (Armed) · ستاپ #${s.id}",
@@ -937,6 +965,7 @@ class Setup(
     var tp2 = Double.NaN
     var tpx = Double.NaN
     var be = false
+    var tp2Hit = false      // آیا پلهٔ ۳۳٪ دوم (TP2) لمس شده (فقط برای مارکر چارت/لاگ)
     var note = ""
     var orderId = -1L
     val bull: Boolean get() = dir == 1

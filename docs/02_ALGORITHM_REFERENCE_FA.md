@@ -241,12 +241,14 @@ addExit:  pnl = (خروج − ورود) × حجم × contractSize     ⚠ بدو
 ```
 Agg.step(isNew, ...):
     اگر isNew:
-        اگر periods >= 2 و cur != null:   cl = cur ; closedNow = true
+        اگر periods >= 1 و cur != null:   cl = cur ; closedNow = true
         cur = کندل جدید ; periods++
     وگرنه:  cur.h = max(cur.h, h) ; cur.l = min(cur.l, l) ; cur.c = c ; cur.v += v
 ```
 
-> ⚠ شرط `periods >= 2` یعنی **اولین کندل کامل هر تایم‌فریم دور ریخته می‌شود** (اختلاف ۷-۳).
+> ⚠ در نسخه‌های ۱٫۳.x شرط `periods >= 2` بود که اولین کندل کامل هر تایم‌فریم را دور
+> می‌ریخت (اختلاف ۷-۳). از کامیت `e137a05` به `periods >= 1` تغییر کرد و اولین
+> کندل هر تایم‌فریم پردازش می‌شود.
 
 **ترتیب پردازش هر کندل بستهٔ چارت:**
 `aggS.step → aggM.step → agg1.step → structureEngine → middleEngine → trigger1Engine → trigger2Engine`

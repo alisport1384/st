@@ -197,7 +197,7 @@ object Store {
         "midConfirmBi" to s.midConfirmBi, "runMax" to s.runMax, "zGone" to s.zGone,
         "lvTouched" to s.lvTouched, "lvUsed" to s.lvUsed, "lvReEntered" to s.lvReEntered,
         "entry" to s.entry, "sl" to s.sl, "tp1" to s.tp1, "tp2" to s.tp2, "tpx" to s.tpx,
-        "be" to s.be, "note" to s.note, "orderId" to s.orderId
+        "be" to s.be, "tp2Hit" to s.tp2Hit, "note" to s.note, "orderId" to s.orderId
     )
 
     private fun setupFrom(m: Map<String, Any?>): Setup {
@@ -211,7 +211,10 @@ object Store {
         s.midConfirmBi = m["midConfirmBi"].asI(); s.runMax = m["runMax"].asD(); s.zGone = m["zGone"].asB()
         s.lvTouched = m["lvTouched"].asB(); s.lvUsed = m["lvUsed"].asB(); s.lvReEntered = m["lvReEntered"].asB()
         s.entry = m["entry"].asD(); s.sl = m["sl"].asD(); s.tp1 = m["tp1"].asD(); s.tp2 = m["tp2"].asD()
-        s.tpx = m["tpx"].asD(); s.be = m["be"].asB(); s.note = m["note"].asS(); s.orderId = m["orderId"].asL()
+        s.tpx = m["tpx"].asD(); s.be = m["be"].asB()
+        // tp2Hit در فایل‌های ذخیره‌شدهٔ نسخه‌های قبل وجود ندارد → false پیش‌فرض
+        s.tp2Hit = m["tp2Hit"].asB()
+        s.note = m["note"].asS(); s.orderId = m["orderId"].asL()
         return s
     }
 
