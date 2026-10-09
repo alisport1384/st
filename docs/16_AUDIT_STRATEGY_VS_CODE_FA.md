@@ -69,7 +69,7 @@
 |---|---|---|
 | برخورد با ناحیه ⇐ «منتظر تایید میانی» | `stage` + `touchMidStart` | ✅ |
 | تایید میانی: کف (صعودی) / سقف (نزولی) کندل میانی هم‌دوره | `midRef` | ✅ |
-| ابطال تایید میانی با کلوز (قابل تنظیم به سایه) | `midInvalidClose` | ✅ |
+| ابطال تایید میانی با **عبور شمع** (حتی یک تیک) | `midInvalidClose=false` | ✅ ۱٫۳٫۹ |
 | کندل ولوم کم = حجم کمتر از کندل قبلی خودش | مقایسه با کندل قبل در تایم‌فریم خودش | ✅ |
 | تایید باکس ولوم کم بدون رسیدن سایه به سمت مخالف | همان | ✅ |
 | **یک‌بارمصرف**: یک برگشت (`lvTouched`) و یک خروج (`lvUsed`) | `if (inside && !lvTouched) … else if (lvTouched && !inside) lvUsed = true` | ✅ |
@@ -90,7 +90,7 @@
 ### §۳ پارامترهای پیش‌فرض
 هر ۱۶ مورد جدول سند با `EngineCfg` مقایسه شد — **همه مطابق**:
 `vpRows=24` · `vpVA=10` · `vpSmooth=1` · `distMode=DIST_TRI_CLOSE` · `minZoneRows=1` ·
-`maxZoneBoxes=24` · `maxSetups=6` · `midInvalidClose=true` · `hvScanFirstTouch=true` ·
+`maxZoneBoxes=24` · `maxSetups=6` · `midInvalidClose=false` · `hvScanFirstTouch=true` ·
 `hvMarkFirstIncrease=true` · `slBufTicks=2` · `minTPunits=10` · `riskPct=1` ·
 `maxLeverage=1` · `maxBarsToFill=150` · `contractSize=1` ✅
 
