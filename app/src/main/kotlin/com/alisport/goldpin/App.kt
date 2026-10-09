@@ -453,9 +453,15 @@ class AppState {
             if (silent) Alerts.inBacktest = true
             try {
                 engine.broker = broker
+                //  ⚠ barCommitHook فقط روی کندل بسته اجرا می‌شود (Engine آن را صدا می‌زند
+                //  و کارگزار فقط روی کندل بسته سفارش پر می‌کند و SL/TP می‌بندد، مطابق
+                //  docs/04 و docs/05 که می‌گویند قیمت زنده تصمیم‌ساز نیست).
+                //  قبلاً در اینجا candles.lastOrNull()?.let { broker.onBar(it, live=true) }
+                //  روی کندل **باز** صدا زده می‌شد و live اصلاً در PaperBroker.onBar
+                //  استفاده نمی‌شد — باعث می‌شد سفارش/پوزیشن روی تیک‌های میانهٔ کندل
+                //  پر/بسته شود، خلاف طراحی.
                 engine.barCommitHook = { cd -> broker.onBar(cd, live = false) }
                 engine.feed(candles, lastIsClosed = false)
-                candles.lastOrNull()?.let { broker.onBar(it, live = true) }
                 publishSnapshot()
             } finally {
                 Alerts.inBacktest = prev

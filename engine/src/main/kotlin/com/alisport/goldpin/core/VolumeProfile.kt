@@ -144,17 +144,13 @@ object VolumeProfile {
             while (guard < 4 * rows && out.size < 2) {
                 guard++
                 // ① صعود به سمت قلهٔ محلی در جهت حرکت
-                //   الگوریتم §۲-۴: «صعود می‌کنیم تا جایی که ردیف بعد بزرگ‌تر یا مساوی باشد،
-                //   سپس به دره می‌رویم». پیش‌تر این حلقه با `rv[j+stepDir] > rv[j]` در برخورد
-                //   با فلات/ردیف مساوی بلافاصله توقف می‌کرد و break انتهای حلقه (زمانی که
-                //   دره قلهٔ دیگری در پی نداشت) کل جست‌وجوی ناحیه‌های بعدی را می‌کشت. برای
-                //   تطابق با سند، == را هم مجاز می‌کنیم و در پایان حلقه اگر قله‌ای پیدا
-                //   نشده آن را نقطه شروعِ پیمایش بعدی می‌گیریم (و فقط در همان حالت، در پاس
-                //   اول اگر ردیفِ اول قلهٔ لبه بود آن را می‌پذیریم).
+                //   §۲-۴ اکید: «صعود می‌کنیم تا جایی که ردیف بعد **بزرگ‌تر** باشد».
+                //   فلات‌ها (ردیف مساوی) رشد به‌شمار نمی‌آیند و پیمایش را متوقف می‌کنند؛
+                //   مطابق آزمون مالک `ZoneFirstRowTest.flat profile still yields no zone`.
                 var pk = -1
                 var j = i
                 while (j + stepDir >= 0 && j + stepDir <= rows - 1) {
-                    if (rv[j + stepDir] >= rv[j]) j += stepDir else break
+                    if (rv[j + stepDir] > rv[j]) j += stepDir else break
                 }
                 if (j != i) pk = j
                 // ①-ب (§۲-۴، افزودهٔ ۱٫۳٫۸ — قاعدهٔ کارفرما):
@@ -171,7 +167,7 @@ object VolumeProfile {
                 var tr = -1
                 var k = pk
                 while (k + stepDir >= 0 && k + stepDir <= rows - 1) {
-                    if (rv[k + stepDir] <= rv[k]) k += stepDir else break
+                    if (rv[k + stepDir] < rv[k]) k += stepDir else break
                 }
                 if (k != pk) tr = k
                 //  ⚠ اگر بعد از قله دره‌ای پیدا نشد (یعنی همهٔ ردیف‌ها در جهت حرکت
