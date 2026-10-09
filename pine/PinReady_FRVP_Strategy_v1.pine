@@ -1,16 +1,29 @@
 //@version=6
 // ═══════════════════════════════════════════════════════════════════════════════
-//  PIN / READY  +  FIXED-RANGE VOLUME PROFILE   ·   Multi-Timeframe Indicator
+//  PIN / READY  +  FIXED-RANGE VOLUME PROFILE   ·   Strategy v1.4.5
 //
 //  زنجیره:  کندل مهم → Ready(BU/BE) → pinBU/pinBE → روند(HH/HL/LL/LH)
 //           → ناحیه فیکس‌رنج ساختار → تایید میانی → ناحیه ولوم کم (تریگر۱)
-//           → ناحیه ولوم زیاد (تریگر۲) → ورود / حدضرر / حدسود (فیبو 1.272)
+//           → ناحیه ولوم زیاد (تریگر۲) → ورود / حدضرر / TP1 / TP2 / TPX (فیبو 1.272)
 //
 //  ⚠ مهم: این نسخه فقط با چارتِ «تریگر ۲» کار می‌کند (پیش‌فرض 1m).
 //          ساختار / میانی / تریگر۱ از روی کندل‌های همان چارت بازسازی می‌شوند،
 //          بنابراین هیچ request.security ای لازم نیست و ری‌پینت ندارد.
 //
 //  مودها: 1)60/15/5/1  2)W/D/4H/1H  3)D/4H/1H/15  4)4H/1H/15/5  5)60/15/5/1(پیش‌فرض)
+//
+//  نگارش ۱٫۴٫۵ (هماهنگ با موتور Kotlin):
+//   ۷-۵  TP2 در مدیریت stage=7 اضافه شد
+//   ۷-۶  ریست highestBE/lowestBUpin با چرخش روند + تصحیح LL/HH
+//   ۷-۷  ترتیب ابطال/مارک تایید میانی (کندل مارک از ابطال معاف نباشد)
+//   ۷-۸  جلوگیری از پر شدن سفارش در همان کندل مسلح شدن
+//   ۷-۹  clearOrders ؛ سفارش در toggle بک‌تست دابل نشود (در پاین با ذات استراتژی این خودبه‌خود نیست)
+//   ۷-۱۰ registerLimit Boolean: ورود شبح ممنوع
+//   ۷-۱۱ ابطال میانی/شکست ناحیه/نقض HV در stage=6 سفارش معلق را لغو می‌کنند
+//   ۷-۱۲ مصرف باکس LV در stage=6 ستاپ را می‌کشد
+//   ۷-۱۳ TP1 و TP2 در یک کندل هر دو ثبت می‌شوند
+//   ۷-۱۴ pruneSetups ستاپ stage=7 را حذف نمی‌کند
+//   H5  کارگزار روی کندل باز اجرا نمی‌شود (در پاین استراتژی فقط روی کندل بسته)
 // ═══════════════════════════════════════════════════════════════════════════════
 strategy("Pin/Ready + FRVP  [Backtest]", "PinReady·STR", true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500, initial_capital = 10000, default_qty_type = strategy.percent_of_equity, default_qty_value = 100, commission_type = strategy.commission.percent, commission_value = 0.04, slippage = 1, pyramiding = 0, process_orders_on_close = false)
 
@@ -143,6 +156,7 @@ type Setup
     float  tp2         = na
     float  tpx         = na
     bool   be          = false
+    bool   tp2Hit      = false
     string note        = ""
     line   l1          = na
     line   l2          = na
@@ -587,6 +601,8 @@ f_newSetup(int d, Zone z, int zBi) =>
     Setup.new(dir = d, stage = 0, zTop = z.top, zBot = z.bot, zIdx = z.idx, zBi = zBi, note = "ثبت شد")
 
 f_pruneSetups() =>
+    //  ⚠ ستاپ stage=7 (در معامله) هرگز حذف نمی‌شود (§۷-۲ معامله باز به‌زور بسته نشود).
+    //  اول ستاپ‌های پایان‌یافته (stage=8)، بعد قدیمی‌ترین ستاپِ فعال قبل از ورود (stage<7) حذف می‌شود.
     while array.size(setups) > maxSetups
         int pick = -1
         if array.size(setups) > 0
@@ -596,17 +612,15 @@ f_pruneSetups() =>
                     pick := k
                     break
         if pick < 0
-            pick := 0
+            for k = 0 to array.size(setups) - 1
+                Setup c = array.get(setups, k)
+                if c.stage < 7
+                    pick := k
+                    break
+        if pick < 0
+            break   // همه ستاپ‌ها در معامله‌اند — بیش از این حذف نمی‌کنیم
         Setup old = array.remove(setups, pick)
-        f_delLine(old.l3)
-        f_delLine(old.l4)
-        f_delLine(old.l5)
-        f_delLine(old.l6)
-        f_delLine(old.l7)
-        f_delLine(old.l8)
-        f_delLine(old.l9)
-        f_delLine(old.l10)
-        f_delLabel(old.tag)
+        f_killSetup(old)
     true
 
 // ───────────────────────────────────────────────────────────────────────────────
@@ -657,12 +671,21 @@ f_killSetup(Setup s) =>
     true
 
 f_cancelDir(int dir) =>
+    //  ستاپ‌های بدون پوزیشن باز لغو می‌شوند (شامل stage=6 / مسلح).
+    //  اگر ستاپ در stage=6 بود و سفارش معلق داشت، سفارش هم لغو می‌شود.
+    //  پوزیشن باز (stage=7) هرگز لغو/بسته نمی‌شود — مطابق §۲-۹.
     if array.size(setups) > 0
         for i = array.size(setups) - 1 to 0
             Setup s = array.get(setups, i)
             if s.dir == dir and s.stage < 7
+                bool wasArmC = s.stage == 6
                 s.stage := 8
                 s.note := "لغو (تغییر روند)"
+                if wasArmC and entryPending and not na(trSetup) and trSetup == s
+                    strategy.cancel("L")
+                    strategy.cancel("S")
+                    entryPending := false
+                    trSetup := na
                 f_killSetup(s)
                 array.remove(setups, i)
     true
@@ -764,11 +787,16 @@ if aggS.closedNow
                     array.clear(pins)
 
     // ── تعیین / ادامه / تغییر روند (فقط با Close کندل ساختار) ──
+    //   با هر تثبیت روند جدید، highestBE و lowestBUpin به پین‌های همین سکانس
+    //   reset می‌شوند (۷-۶ ریست). LL/HH چرخش هم طبق §۲-۳:
+    //   چرخش نزولی: LL = lastBUpin (کف pinBU) ؛ صعودی: HH = lastBEpin (سقف pinBE).
     if trend == 0
         if bullSetup and not na(bullBEHigh) and sb.c > bullBEHigh and sb.bi > bullBU2Bi
             trend := 1
             HH := bullBEHigh
             HL := bullBU2Low
+            highestBE := bullBEHigh
+            lowestBUpin := bullBU2Low
             bullSetup := false
             bearSetup := false
             evTrendUp := true
@@ -776,6 +804,8 @@ if aggS.closedNow
             trend := -1
             LL := bearBULow
             LH := bearBE2High
+            lowestBUpin := bearBULow
+            highestBE := bearBE2High
             bullSetup := false
             bearSetup := false
             evTrendDn := true
@@ -784,16 +814,20 @@ if aggS.closedNow
             HH := sb.c
         else if sb.c < HL
             trend := -1
-            LL := sb.c
+            LL := na(lowestBUpin) ? sb.c : lowestBUpin
             LH := HH
+            lowestBUpin := LL
+            highestBE := na
             evChgDn := true
     else if trend == -1
         if sb.c < LL
             LL := sb.c
         else if sb.c > LH
             trend := 1
-            HH := sb.c
+            HH := na(highestBE) ? sb.c : highestBE
             HL := LL
+            highestBE := HH
+            lowestBUpin := na
             evChgUp := true
 
     if evChgDn or evTrendDn
@@ -877,21 +911,18 @@ if aggM.closedNow and not na(aggM.cl) and array.size(setups) > 0
                 s.l3 := f_setLine(s.l3, mc.bi, s.midRef, color.new(color.gray, 0))
                 f_delLabel(s.midLbl)
                 s.midLbl := label.new(mc.bi, s.midRef, s.dir == 1 ? "کف تایید میانی" : "سقف تایید میانی", xloc.bar_index, yloc.price, color.new(color.gray, 10), label.style_label_right, color.white, size.small)
-            else if not na(s.midRef) and na(s.markBi)
-                // ◆ مارک کردن کندل بعد از تایید (فقط نشانه)
-                s.markH := mc.h
-                s.markL := mc.l
-                s.markBi := mc.bi
-                if s.stage == 2
-                    s.stage := 3
             else if not na(s.midRef)
-                // ✖ ابطال تایید میانی → کندل بعدی میانی دوباره تایید می‌شود
+                // ✖ ابطال تایید میانی — قبل از مارک چک می‌شود، چون کندل مارک هم
+                //   می‌تواند سطح را بشکند (§۶-۱۲). ۷-۷ رفع شد.
                 bool broken = false
                 if midInvalid == "Close | بسته شدن"
                     broken := s.dir == 1 ? mc.c < s.midRef : mc.c > s.midRef
                 else
                     broken := s.dir == 1 ? mc.l < s.midRef : mc.h > s.midRef
                 if broken
+                    //  اگر ستاپ مسلح بود (stage=6) سفارش pending را لغو می‌کنیم —
+                    //  ۷-۱۱: سفارش یتیم بعد از ابطال میانی.
+                    bool wasArmed = s.stage == 6
                     float oldMid = s.midRef
                     f_delLine(s.l3)
                     f_delLabel(s.midLbl)
@@ -906,15 +937,31 @@ if aggM.closedNow and not na(aggM.cl) and array.size(setups) > 0
                     s.hvBi := na
                     s.hvScanBi := na
                     s.runMax := na
+                    s.lvTouched := false
+                    s.lvUsed := false
                     f_delLine(s.l4)
                     f_delLine(s.l5)
                     f_delLine(s.l6)
                     f_delLine(s.l7)
+                    f_delLine(s.l8)
                     s.l4 := na
                     s.l5 := na
                     s.l6 := na
                     s.l7 := na
+                    s.l8 := na
+                    if wasArmed and entryPending and not na(trSetup) and trSetup == s
+                        strategy.cancel("L")
+                        strategy.cancel("S")
+                        entryPending := false
+                        trSetup := na
                     label.new(mc.bi, oldMid, "تایید میانی باطل شد", xloc.bar_index, yloc.price, color.new(color.red, 30), label.style_label_right, color.white, size.tiny)
+                else if na(s.markBi)
+                    // ◆ مارک کردن کندل بعد از تایید (فقط نشانه) — فقط اگر ابطال اتفاق نیفتاده
+                    s.markH := mc.h
+                    s.markL := mc.l
+                    s.markBi := mc.bi
+                    if s.stage == 2
+                        s.stage := 3
 
 // ───────────────────────────────────────────────────────────────────────────────
 //  ⑫ TRIGGER-1 CLOSE ENGINE  ·  ناحیه ولوم کم (در تایم‌فریم تریگر۱)
@@ -957,6 +1004,7 @@ if agg1.closedNow and not na(agg1.cl) and array.size(setups) > 0
                         s.l5 := f_setLine(s.l5, s.lvBi, s.lvL, color.new(color.yellow, 0))
                         label.new(q1.bi, bullL ? s.lvH : s.lvL, "ناحیه ولوم کم ✔  (تریگر۱)", xloc.bar_index, yloc.price, color.new(color.yellow, 15), bullL ? label.style_label_up : label.style_label_down, color.black, size.small)
             // ── یک‌بارمصرف بودن باکس ولوم کم ──
+            //   §۶-۱۴: مصرف باکس LV حتی در stage=6 ستاپ را می‌کشد و سفارش معلق را لغو می‌کند (۷-۱۲).
             if not na(s.lvBi) and not s.lvUsed and s.stage >= 4 and s.stage <= 6
                 bool insideBox = q1.l <= s.lvH and q1.h >= s.lvL
                 if insideBox and not s.lvTouched
@@ -971,9 +1019,25 @@ if agg1.closedNow and not na(agg1.cl) and array.size(setups) > 0
                         f_delLine(s.l5)
                         s.l4 := na
                         s.l5 := na
-                        if s.stage == 4 or s.stage == 5
+                        if s.stage >= 4 and s.stage <= 6
+                            bool wasArmedL = s.stage == 6
                             s.stage := 8
                             s.note := "باکس ولوم کم مصرف شد (یک‌بار)"
+                            f_delLine(s.l6)
+                            f_delLine(s.l7)
+                            f_delLine(s.l8)
+                            f_delLine(s.l9)
+                            f_delLine(s.l10)
+                            s.l6 := na
+                            s.l7 := na
+                            s.l8 := na
+                            s.l9 := na
+                            s.l10 := na
+                            if wasArmedL and entryPending and not na(trSetup) and trSetup == s
+                                strategy.cancel("L")
+                                strategy.cancel("S")
+                                entryPending := false
+                                trSetup := na
                         label.new(q1.bi, bullL ? s.lvH : s.lvL, "باکس ولوم کم مصرف شد ✖", xloc.bar_index, yloc.price, color.new(color.silver, 30), bullL ? label.style_label_up : label.style_label_down, color.black, size.tiny)
 prevT1Vol := agg1.closedNow ? agg1.cl.v : prevT1Vol
 
@@ -995,13 +1059,19 @@ if array.size(setups) > 0
                 s.touchMidStart := aggM.cur.t
                 label.new(bar_index, bull ? s.zBot : s.zTop, "برخورد · منتظر بسته شدن کندل میانی", xloc.bar_index, yloc.price, color.new(color.silver, 20), label.style_label_left, color.black, size.tiny)
 
-        // ② پاک شدن / لغو ناحیه ساختار
+        // ② پاک شدن / لغو ناحیه ساختار (کلوز از سمت دور)
         if s.stage < 7 and not s.zGone and bar_index > s.zBi
             bool broken = bull ? close < s.zBot : close > s.zTop
             if broken
+                bool wasArmedZ = s.stage == 6
                 s.zGone := true
                 s.stage := 8
                 s.note := "شکست ناحیه ساختار (لغو)"
+                if wasArmedZ and entryPending and not na(trSetup) and trSetup == s
+                    strategy.cancel("L")
+                    strategy.cancel("S")
+                    entryPending := false
+                    trSetup := na
                 f_killSetup(s)
                 label.new(bar_index, close, "لغو · شکست ناحیه ساختار", xloc.bar_index, yloc.price, color.new(color.red, 40), label.style_label_down, color.white, size.tiny)
 
@@ -1031,46 +1101,64 @@ if array.size(setups) > 0
                     s.l6 := na
                     s.l7 := na
                 else if conf
-                    // ✔ ناحیه ولوم زیاد تایید شد
+                    // ✔ ناحیه ولوم زیاد تایید شد → مسلح
+                    //   ⚠ فقط اگر کارگزار/استراتژی در حال حاضر سفارش/پوزیشن باز نداشته باشد
+                    //   stage=6 می‌رویم. در غیر این صورت در stage=5 می‌مانیم تا بعداً دوباره تلاش
+                    //   شود (۷-۱۰: ورود شبح).
                     float eRef = bull ? s.hvH : s.hvL
                     s.sl := bull ? s.hvL - slBufTicks * syminfo.mintick : s.hvH + slBufTicks * syminfo.mintick
                     float a0 = bull ? highestBE : lowestBUpin
                     float a1 = s.midRef
                     bool haveFib = not na(a0) and not na(a1) and (bull ? a0 > a1 : a0 < a1)
+                    float tp1loc = na
+                    float tp2loc = na
+                    float tpxloc = na
                     if haveFib
                         float R = bull ? a0 - a1 : a1 - a0
-                        s.tp1 := bull ? a1 + 0.382 * R : a1 - 0.382 * R
-                        s.tp2 := bull ? a1 + 0.5 * R : a1 - 0.5 * R
-                        s.tpx := bull ? a1 + 1.272 * R : a1 - 1.272 * R
+                        tp1loc := bull ? a1 + 0.382 * R : a1 - 0.382 * R
+                        tp2loc := bull ? a1 + 0.5 * R : a1 - 0.5 * R
+                        tpxloc := bull ? a1 + 1.272 * R : a1 - 1.272 * R
                     else
-                        s.tpx := bull ? eRef + minTPunits : eRef - minTPunits
+                        tpxloc := bull ? eRef + minTPunits : eRef - minTPunits
                     if bull
-                        if s.tpx - eRef < minTPunits
-                            s.tpx := eRef + minTPunits
-                        if na(s.tp1) or s.tp1 <= eRef
-                            s.tp1 := eRef + (s.tpx - eRef) * 0.382
-                        if na(s.tp2) or s.tp2 <= eRef
-                            s.tp2 := eRef + (s.tpx - eRef) * 0.5
+                        if tpxloc - eRef < minTPunits
+                            tpxloc := eRef + minTPunits
+                        if na(tp1loc) or tp1loc <= eRef
+                            tp1loc := eRef + (tpxloc - eRef) * 0.382
+                        if na(tp2loc) or tp2loc <= eRef
+                            tp2loc := eRef + (tpxloc - eRef) * 0.5
                     else
-                        if eRef - s.tpx < minTPunits
-                            s.tpx := eRef - minTPunits
-                        if na(s.tp1) or s.tp1 >= eRef
-                            s.tp1 := eRef - (eRef - s.tpx) * 0.382
-                        if na(s.tp2) or s.tp2 >= eRef
-                            s.tp2 := eRef - (eRef - s.tpx) * 0.5
-                    s.stage := 6
-                    cHV += 1
-                    s.hvConfBi := bar_index
-                    evArmedB := bull
-                    evArmedS := not bull
-                    if showTrade
-                        s.l8 := f_setLine(s.l8, bar_index, eRef, color.new(color.lime, 0))
-                        s.l9 := f_setLine(s.l9, bar_index, s.sl, color.new(color.red, 0))
-                        s.l10 := f_setLine(s.l10, bar_index, s.tpx, color.new(color.fuchsia, 0))
-                    label.new(bar_index, eRef, bull ? "مسلح برای خرید (Armed)" : "مسلح برای فروش (Armed)", xloc.bar_index, yloc.price, color.new(bull ? color.green : color.red, 20), bull ? label.style_label_up : label.style_label_down, color.white, size.small)
+                        if eRef - tpxloc < minTPunits
+                            tpxloc := eRef - minTPunits
+                        if na(tp1loc) or tp1loc >= eRef
+                            tp1loc := eRef - (eRef - tpxloc) * 0.382
+                        if na(tp2loc) or tp2loc >= eRef
+                            tp2loc := eRef - (eRef - tpxloc) * 0.5
+                    //  ۷-۱۰: فقط اگر هیچ سفارش/پوزیشن باز نیست واقعاً مسلح می‌شویم.
+                    //  (مطابق کد Kotlin registerLimit که Boolean برمی‌گرداند.)
+                    bool canArm = not entryPending and strategy.position_size == 0
+                    if not canArm
+                        s.hvBi := na
+                        s.runMax := volume
+                    else
+                        s.tp1 := tp1loc
+                        s.tp2 := tp2loc
+                        s.tpx := tpxloc
+                        s.entry := eRef
+                        s.be := false
+                        s.tp2Hit := false
+                        s.stage := 6
+                        cHV += 1
+                        s.hvConfBi := bar_index
+                        evArmedB := bull
+                        evArmedS := not bull
+                        if showTrade
+                            s.l8 := f_setLine(s.l8, bar_index, eRef, color.new(color.lime, 0))
+                            s.l9 := f_setLine(s.l9, bar_index, s.sl, color.new(color.red, 0))
+                            s.l10 := f_setLine(s.l10, bar_index, s.tpx, color.new(color.fuchsia, 0))
+                        label.new(bar_index, eRef, bull ? "مسلح برای خرید (Armed)" : "مسلح برای فروش (Armed)", xloc.bar_index, yloc.price, color.new(bull ? color.green : color.red, 20), bull ? label.style_label_up : label.style_label_down, color.white, size.small)
 
-                    // ── ثبت اوردر ورود (بای/سل لیمیت روی لبهٔ ناحیه ولوم زیاد) ──
-                    if not entryPending and strategy.position_size == 0
+                        // ── ثبت اوردر ورود (بای/سل لیمیت روی لبهٔ ناحیه ولوم زیاد) ──
                         trSetup := s
                         trDir := bull ? 1 : -1
                         trEntry := eRef
@@ -1086,6 +1174,7 @@ if array.size(setups) > 0
                             trQ3 := qq * 0.34
                             trTp1Done := false
                             trTp2Done := false
+                            trTp2Hit := false
                             if bull
                                 strategy.entry("L", strategy.long, qty = qq, limit = eRef, comment = "PinReady-L")
                             else
@@ -1109,16 +1198,25 @@ if array.size(setups) > 0
                         s.l7 := f_setLine(s.l7, bar_index, low, color.new(color.blue, 0))
                         label.new(bar_index, bull ? low : high, "کندل ولوم زیاد (مارک)", xloc.bar_index, yloc.price, color.new(color.blue, 25), bull ? label.style_label_up : label.style_label_down, color.white, size.tiny)
 
-        // ④ ورود : برگشت به ناحیه ولوم زیاد
+        // ④ ورود : برگشت به ناحیه ولوم زیاد (پر شدن سفارش لیمیت)
+        //   §۶-۱۷: کلوز آن‌طرف ناحیه HV بعد از مسلح شدن → نقض، سفارش معلق لغو.
         if s.stage == 6 and bar_index > s.hvConfBi
             if (bull ? close < s.hvL : close > s.hvH)
+                bool wasArmedH = s.stage == 6
                 s.hvBi := na
                 s.runMax := volume
                 s.stage := 4
+                if wasArmedH and entryPending and not na(trSetup) and trSetup == s
+                    strategy.cancel("L")
+                    strategy.cancel("S")
+                    entryPending := false
+                    trSetup := na
                 f_delLine(s.l6)
                 f_delLine(s.l7)
+                f_delLine(s.l8)
                 s.l6 := na
                 s.l7 := na
+                s.l8 := na
             else if (bull ? low <= s.hvH : high >= s.hvL)
                 s.entry := bull ? s.hvH : s.hvL
                 s.stage := 7
@@ -1131,6 +1229,8 @@ if array.size(setups) > 0
                 label.new(bar_index, s.entry, (bull ? "ورود خرید" : "ورود فروش") + " @ " + str.tostring(s.entry, format.mintick), xloc.bar_index, yloc.price, color.new(bull ? color.green : color.red, 10), bull ? label.style_label_up : label.style_label_down, color.white, size.small)
 
         // ⑤ مدیریت معامله : حدضرر / سر‌به‌سر / حدسود
+        //   ترتیب: SL/TPX اول پایان می‌دهند. TP1 و TP2 پله‌های میانی‌اند و می‌توانند در
+        //   یک کندل هر دو لمس شوند (۷-۱۳: در یک کندل فقط TP1 ثبت می‌شد).
         if s.stage == 7 and not na(s.sl) and not na(s.tpx)
             bool done = false
             float px = na
@@ -1144,18 +1244,23 @@ if array.size(setups) > 0
                     done := true
                     px := s.tpx
                     note := "حد سود نهایی (1.272)"
-                else if not s.be and not na(s.tp1) and high >= s.tp1
-                    s.be := true
-                    s.sl := s.entry
-                    if not na(s.l9)
-                        line.set_xy1(s.l9, bar_index, s.entry)
-                        line.set_xy2(s.l9, bar_index, s.entry)
-                        line.set_color(s.l9, color.new(color.orange, 0))
-                    label.new(bar_index, s.entry, "TP1 (38%) ✔ · حدضرر = سر‌به‌سر", xloc.bar_index, yloc.price, color.new(color.orange, 20), label.style_label_down, color.white, size.tiny)
-                else if s.be and low <= s.entry
-                    done := true
-                    px := s.entry
-                    note := "خروج سر‌به‌سر"
+                else
+                    if not s.be and not na(s.tp1) and high >= s.tp1
+                        s.be := true
+                        s.sl := s.entry
+                        if not na(s.l9)
+                            line.set_xy1(s.l9, bar_index, s.entry)
+                            line.set_xy2(s.l9, bar_index, s.entry)
+                            line.set_color(s.l9, color.new(color.orange, 0))
+                        label.new(bar_index, s.entry, "TP1 (38%) ✔ · حدضرر = سر‌به‌سر", xloc.bar_index, yloc.price, color.new(color.orange, 20), label.style_label_down, color.white, size.tiny)
+                    //  TP2: if مستقل (else if نباید باشد تا در همان کندل TP1+TP2 ثبت شود)
+                    if s.be and not s.tp2Hit and not na(s.tp2) and high >= s.tp2
+                        s.tp2Hit := true
+                        label.new(bar_index, s.tp2, "TP2 (50%) ✔", xloc.bar_index, yloc.price, color.new(color.orange, 10), label.style_label_down, color.white, size.tiny)
+                    if s.be and low <= s.entry
+                        done := true
+                        px := s.entry
+                        note := "خروج سر‌به‌سر"
             else
                 if high >= s.sl
                     done := true
@@ -1165,18 +1270,22 @@ if array.size(setups) > 0
                     done := true
                     px := s.tpx
                     note := "حد سود نهایی (1.272)"
-                else if not s.be and not na(s.tp1) and low <= s.tp1
-                    s.be := true
-                    s.sl := s.entry
-                    if not na(s.l9)
-                        line.set_xy1(s.l9, bar_index, s.entry)
-                        line.set_xy2(s.l9, bar_index, s.entry)
-                        line.set_color(s.l9, color.new(color.orange, 0))
-                    label.new(bar_index, s.entry, "TP1 (38%) ✔ · حدضرر = سر‌به‌سر", xloc.bar_index, yloc.price, color.new(color.orange, 20), label.style_label_up, color.white, size.tiny)
-                else if s.be and high >= s.entry
-                    done := true
-                    px := s.entry
-                    note := "خروج سر‌به‌سر"
+                else
+                    if not s.be and not na(s.tp1) and low <= s.tp1
+                        s.be := true
+                        s.sl := s.entry
+                        if not na(s.l9)
+                            line.set_xy1(s.l9, bar_index, s.entry)
+                            line.set_xy2(s.l9, bar_index, s.entry)
+                            line.set_color(s.l9, color.new(color.orange, 0))
+                        label.new(bar_index, s.entry, "TP1 (38%) ✔ · حدضرر = سر‌به‌سر", xloc.bar_index, yloc.price, color.new(color.orange, 20), label.style_label_up, color.white, size.tiny)
+                    if s.be and not s.tp2Hit and not na(s.tp2) and low <= s.tp2
+                        s.tp2Hit := true
+                        label.new(bar_index, s.tp2, "TP2 (50%) ✔", xloc.bar_index, yloc.price, color.new(color.orange, 10), label.style_label_up, color.white, size.tiny)
+                    if s.be and high >= s.entry
+                        done := true
+                        px := s.entry
+                        note := "خروج سر‌به‌سر"
             if done
                 s.stage := 8
                 cDone += 1
@@ -1210,7 +1319,9 @@ if flatNow and entryPending and (not setupAlive or (not na(entryBar) and bar_ind
     entryPending := false
 
 // ② تمدید سفارش ورود لیمیت هر کندل (تا حتماً فعال باشد)
-if flatNow and entryPending and setupAlive and not na(trEntry)
+//   ۷-۸: سفارش در همان کندل مسلح شدن (bar_index == entryBar) پر نمی‌شود — مطابق
+//   §۲-۸ «برگشت به لبه» از کندل بعد.
+if flatNow and entryPending and setupAlive and not na(trEntry) and bar_index > entryBar
     if trDir == 1
         strategy.entry("L", strategy.long, qty = trQ1 + trQ2 + trQ3, limit = trEntry, comment = "PinReady-L")
     else
