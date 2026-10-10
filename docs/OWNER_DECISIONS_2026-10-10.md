@@ -25,3 +25,10 @@
 
 ## Q5 · فایل قدیمی استراتژی
 **پاسخ:** آرشیو شود. ✅ `docs/STRATEGY_PLAIN_FA.md` و `docs/راهنمای_کامل_استراتژی.docx` به `docs/archive/` منتقل شدند. سند نهایی `GoldPin_strategy_final_FA(only owner can delete or modify).md` تنها مرجع ماند.
+
+---
+
+## یادداشت ساخت (Build)
+- سندباکس امکان دانلود وابستگی‌های Gradle را به‌خاطر خطای TLS (handshake_failure در Maven Central) نداشت، بنابراین `./gradlew :engine:compileKotlin` اجرا نشد.
+- لطفاً روی ماشین خودتان `./gradlew :engine:compileKotlin :app:assembleDebug` اجرا کنید تا خطاهای نحوی/ارجاعی (اگر باشد) مشخص شوند.
+- اسکریپت‌های Pine در TradingView وارد و بررسی نحوی شوند؛ در این محیط امکان اجرای Pine نیست.
