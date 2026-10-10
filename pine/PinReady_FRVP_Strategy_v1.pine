@@ -25,7 +25,8 @@
 //   ۷-۱۴ pruneSetups ستاپ stage=7 را حذف نمی‌کند
 //   H5  کارگزار روی کندل باز اجرا نمی‌شود (در پاین استراتژی فقط روی کندل بسته)
 // ═══════════════════════════════════════════════════════════════════════════════
-strategy("Pin/Ready + FRVP  [Backtest]", "PinReady·STR", true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500, initial_capital = 10000, default_qty_type = strategy.percent_of_equity, default_qty_value = 100, commission_type = strategy.commission.percent, commission_value = 0.04, slippage = 1, pyramiding = 0, process_orders_on_close = false)
+// §defaults سند نهایی: سرمایه اولیه ۱۰۰٬۰۰۰ ؛ کارمزد ۰٫۰۴٪ + ۱ تیک اسلیپیج (مثل قبل)
+strategy("Pin/Ready + FRVP  [Backtest]", "PinReady·STR", true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500, initial_capital = 100000, default_qty_type = strategy.percent_of_equity, default_qty_value = 100, commission_type = strategy.commission.percent, commission_value = 0.04, slippage = 1, pyramiding = 0, process_orders_on_close = false)
 
 // ───────────────────────────────────────────────────────────────────────────────
 //  ① INPUTS
@@ -47,19 +48,23 @@ int   vpSmooth = input.int(1, "هموارسازی ردیف‌ها (۰ تا ۳)",
 bool  showPocVA = input.bool(true, "نمایش POC و Value Area روی چارت", group = "② Fixed Range Volume Profile | فیکس‌رنج", tooltip = "برای اینکه بتوانید POC کد را با POC ابزار خودتان مقایسه کنید")
 bool  showRejectedZones = input.bool(true, "نمایش ناحیه‌های ردشده (کلوز داخلشان بود)", group = "② Fixed Range Volume Profile | فیکس‌رنج")
 bool  clearUsedZones = input.bool(true, "پاک کردن باکس وقتی قیمت از سمت دور آن بسته شود", group = "② Fixed Range Volume Profile | فیکس‌رنج")
-int   maxZoneBoxes = input.int(24, "حداکثر باکس ناحیه روی چارت", minval = 2, maxval = 200, group = "② Fixed Range Volume Profile | فیکس‌رنج")
+// §default: نامحدود باکس ناحیه (مقدار بزرگ = بی‌اثر؛ حذف فقط با کلوز از سمت دور)
+int   maxZoneBoxes = input.int(500, "حداکثر باکس ناحیه روی چارت", minval = 2, maxval = 2000, group = "② Fixed Range Volume Profile | فیکس‌رنج")
 
 int   maxSetups = input.int(6, "حداکثر ستاپ‌های هم‌زمان", minval = 1, maxval = 20, group = "③ Engine | موتور")
-string midInvalid = input.string("Close | بسته شدن", "شکست تایید میانی با:", options = ["Close | بسته شدن", "Wick | سایه"], group = "③ Engine | موتور")
+// §default: ابطال میانی با Wick (سایه) — سند نهایی §4-5
+string midInvalid = input.string("Wick | سایه", "شکست تایید میانی با:", options = ["Close | بسته شدن", "Wick | سایه"], group = "③ Engine | موتور")
 string hvScan = input.string("First LV Touch | اولین برگشت به باکس ولوم کم", "شروع اسکن ولوم زیاد (تریگر۲) از:", options = ["First LV Touch | اولین برگشت به باکس ولوم کم", "LV Confirm | لحظه تایید ناحیه ولوم کم"], group = "③ Engine | موتور")
 string hvMarkMode = input.string("FirstIncrease | اولین افزایش حجم (نسبت به کندل قبل)", "معیار کندل مارکِ ولوم زیاد:", options = ["RunningMax | بیشترین حجم تا این لحظه", "FirstIncrease | اولین افزایش حجم (نسبت به کندل قبل)"], group = "③ Engine | موتور")
 
 string qtyMode = input.string("Risk % | ریسک ثابت", "روش تعیین حجم", options = ["Risk % | ریسک ثابت", "Equity % | درصد سرمایه"], group = "⑤ Backtest | بک‌تست")
 float riskPct  = input.float(1.0, "ریسک هر معامله (٪ سرمایه)", minval = 0.01, maxval = 100.0, step = 0.1, group = "⑤ Backtest | بک‌تست")
-float maxLeverage = input.float(5.0, "حداکثر اهرم مجاز (برای محدود کردن حجم)", minval = 0.1, maxval = 100.0, step = 0.1, group = "⑤ Backtest | بک‌تست", tooltip = "حجم را طوری محدود می‌کند که سفارش به دلیل کمبود مارجین رد نشود. پیش‌فرض ۵ برای طلای XAUUSD مناسب است.")
+// §default: اهرم ۱۰
+float maxLeverage = input.float(10.0, "حداکثر اهرم مجاز (برای محدود کردن حجم)", minval = 0.1, maxval = 100.0, step = 0.1, group = "⑤ Backtest | بک‌تست", tooltip = "حجم را طوری محدود می‌کند که سفارش به دلیل کمبود مارجین رد نشود. پیش‌فرض ۱۰.")
 float qtyPct   = input.float(100.0, "درصد سرمایه در حالت Equity %", minval = 1.0, maxval = 100.0, group = "⑤ Backtest | بک‌تست")
 bool  roundQty = input.bool(false, "گرد کردن حجم به عدد صحیح", group = "⑤ Backtest | بک‌تست")
-int   maxBarsToFill = input.int(150, "لغو اوردر اگر تا N کندل پر نشد", minval = 5, group = "⑤ Backtest | بک‌تست")
+// §default: غیرفعال — انقضا طبق سند نهایی با «شکست پین» یا «گذشت یک کندل ساختار»
+int   maxBarsToFill = input.int(100000, "لغو اوردر اگر تا N کندل پر نشد (۱۰۰۰۰۰=غیرفعال)", minval = 5, group = "⑤ Backtest | بک‌تست")
 
 float slBufTicks = input.float(2.0, "بافر حد ضرر (تیک)", minval = 0.0, group = "④ Trade | معامله")
 float minTPunits  = input.float(10.0, "حداقل فاصله حدسود (واحد قیمتی)", minval = 0.0, group = "④ Trade | معامله", tooltip = "اگر فاصله ورود تا خط 1.272 کمتر از این عدد بود، حدسود = ورود ± همین عدد")

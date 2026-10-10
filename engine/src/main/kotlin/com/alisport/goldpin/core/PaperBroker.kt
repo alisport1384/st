@@ -199,11 +199,24 @@ class PaperBroker(private val cfg: Settings) {
 
     private fun manageBar(t: Trade, cd: Candle) {
         val bull = t.dir == 1
+        val sameEntryBar = (cd.bi == t.entryBi)
         val slLvl = if (t.be) t.entry else t.sl0
         val q1 = t.qty * 0.33
         val q2 = t.qty * 0.33
         val usedQty = t.fills.filter { it.kind != "ENTRY" }.sumOf { it.qty }
         val remaining = t.qty - usedQty
+
+        // §۶-۲۱: ورود و TP1 در یک کندل → خروج سر‌به‌سر خالص (نتیجه صفر).
+        // TP1 پاره‌پاره ثبت نمی‌شود؛ کل پوزیشن در قیمت ورود بسته می‌شود.
+        if (sameEntryBar && !t.tp1.isNaN()) {
+            val tp1Hit = if (bull) cd.h >= t.tp1 else cd.l <= t.tp1
+            val entryRetraced = if (bull) cd.l <= t.entry else cd.h >= t.entry
+            if (tp1Hit && entryRetraced) {
+                t.be = true
+                closeAll(t, t.entry, cd.t, cd.bi, "خروج سر‌به‌سر (TP1 و ورود یک کندل)")
+                return
+            }
+        }
 
         // ترتیب محافظه‌کارانه: ابتدا حدضرر/سر‌به‌سر ، بعد حدسود نهایی ، بعد پله‌ها
         val hitStop = if (bull) cd.l <= slLvl else cd.h >= slLvl
@@ -217,7 +230,8 @@ class PaperBroker(private val cfg: Settings) {
             return
         }
         val tp1Done = t.fills.any { it.kind == "TP1" }
-        if (!tp1Done && !t.tp1.isNaN()) {
+        if (!tp1Done && !t.tp1.isNaN() && !sameEntryBar) {
+            // در کندل ورود، TP1 را پاره‌پاره نمی‌زنیم — قاعدهٔ بالا خروج BE خالص را انجام می‌دهد.
             val hit = if (bull) cd.h >= t.tp1 else cd.l <= t.tp1
             if (hit) {
                 addExit(t, cd, t.tp1, min(q1, remaining), "TP1")

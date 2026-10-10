@@ -38,10 +38,12 @@ int   vpSmooth = input.int(1, "هموارسازی ردیف‌ها (۰ تا ۳)",
 bool  showPocVA = input.bool(true, "نمایش POC و Value Area روی چارت", group = "② Fixed Range Volume Profile | فیکس‌رنج", tooltip = "برای اینکه بتوانید POC کد را با POC ابزار خودتان مقایسه کنید")
 bool  showRejectedZones = input.bool(true, "نمایش ناحیه‌های ردشده (کلوز داخلشان بود)", group = "② Fixed Range Volume Profile | فیکس‌رنج")
 bool  clearUsedZones = input.bool(true, "پاک کردن باکس وقتی قیمت از سمت دور آن بسته شود", group = "② Fixed Range Volume Profile | فیکس‌رنج")
-int   maxZoneBoxes = input.int(24, "حداکثر باکس ناحیه روی چارت", minval = 2, maxval = 200, group = "② Fixed Range Volume Profile | فیکس‌رنج")
+// §default: نامحدود باکس ناحیه (مقدار بزرگ = بی‌اثر؛ حذف باکس‌ها فقط با کلوز از سمت دور)
+int   maxZoneBoxes = input.int(500, "حداکثر باکس ناحیه روی چارت", minval = 2, maxval = 2000, group = "② Fixed Range Volume Profile | فیکس‌رنج")
 
 int   maxSetups = input.int(6, "حداکثر ستاپ‌های هم‌زمان", minval = 1, maxval = 20, group = "③ Engine | موتور")
-string midInvalid = input.string("Close | بسته شدن", "شکست تایید میانی با:", options = ["Close | بسته شدن", "Wick | سایه"], group = "③ Engine | موتور")
+// §default: ابطال میانی با Wick (سایه) — سند نهایی §4-5
+string midInvalid = input.string("Wick | سایه", "شکست تایید میانی با:", options = ["Close | بسته شدن", "Wick | سایه"], group = "③ Engine | موتور")
 string hvScan = input.string("First LV Touch | اولین برگشت به باکس ولوم کم", "شروع اسکن ولوم زیاد (تریگر۲) از:", options = ["First LV Touch | اولین برگشت به باکس ولوم کم", "LV Confirm | لحظه تایید ناحیه ولوم کم"], group = "③ Engine | موتور")
 string hvMarkMode = input.string("FirstIncrease | اولین افزایش حجم (نسبت به کندل قبل)", "معیار کندل مارکِ ولوم زیاد:", options = ["RunningMax | بیشترین حجم تا این لحظه", "FirstIncrease | اولین افزایش حجم (نسبت به کندل قبل)"], group = "③ Engine | موتور")
 
