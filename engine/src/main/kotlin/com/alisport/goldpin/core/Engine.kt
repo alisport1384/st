@@ -392,13 +392,14 @@ class Engine(val cfg: Settings) {
             }
         }
 
-        // ── ابطال پین **بعد از** Ready (docs/19 بند ۳) ──
-        // اگر باز **یا** کلوز آن‌طرف `ref` برود، **ولی** کلوز پایین‌تر از کف کندل مهم
+        // ── ابطال پین **بعد از** Ready (مطابق تصمیم ۱٫۴٫۸: فقط کلوز، اکید) ──
+        // اگر کلوز آن‌طرف `ref` برود، **ولی** کلوز پایین‌تر از کف کندل مهم
         // بسته نشود ⇒ کندل مهم و pinBU حذف می‌شوند و مجدد سنجیده می‌شوند.
+        // باز شدن کندل یا تساوی با ref پین را نمی‌کُشد (بند ۱٫۴٫۸ «رد شدن باطل کند»).
         // ⚠ سطح `lastBUpin` دست‌نخورده می‌ماند — بند ۵-۱: پینِ حذف‌شده تا تشکیل پین
         //    جدید نقش HL را برای تغییر روند نگه می‌دارد.
         if (buActive && !lastBUpinRef.isNaN() && sb.bi > 0) {
-            val crossed = sb.o < lastBUpinRef || sb.c < lastBUpinRef
+            val crossed = sb.c < lastBUpinRef
             val closedBelowLow = !lastBUpin.isNaN() && sb.c < lastBUpin
             if (crossed && !closedBelowLow) {
                 buActive = false
@@ -409,7 +410,7 @@ class Engine(val cfg: Settings) {
         }
         // قرینه: pinBE
         if (beActive && !lastBEpinRef.isNaN() && sb.bi > 0) {
-            val crossed = sb.o > lastBEpinRef || sb.c > lastBEpinRef
+            val crossed = sb.c > lastBEpinRef
             val closedAboveHigh = !lastBEpin.isNaN() && sb.c > lastBEpin
             if (crossed && !closedAboveHigh) {
                 beActive = false
