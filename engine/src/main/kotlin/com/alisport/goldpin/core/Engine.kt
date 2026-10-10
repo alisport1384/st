@@ -998,7 +998,6 @@ class Engine(val cfg: Settings) {
             return
         }
         val firstArm = s.armBi < 0
-        if (firstArm) s.sameStructureBar = true
         s.armBi = curBi
         s.armsSinceS++
         s.prevEntry = eRef

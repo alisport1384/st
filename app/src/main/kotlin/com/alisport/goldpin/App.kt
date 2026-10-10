@@ -113,6 +113,8 @@ class AppState {
         val trades: List<Trade>,
         val openTrade: Trade?,
         val pendingOrder: Order?,
+        val openTrades: List<Trade>,
+        val pendingOrders: List<Order>,
         val lastPocPx: Double,
         val lastEntryPx: Double,
         val lastSlPx: Double,
@@ -123,7 +125,7 @@ class AppState {
     @Volatile
     private var snap: UiSnapshot = UiSnapshot(
         emptyList(), emptyList(), emptyList(), emptyList(), emptyList(),
-        emptyList(), emptyList(), null, null,
+        emptyList(), emptyList(), null, null, emptyList(), emptyList(),
         Double.NaN, Double.NaN, Double.NaN, Double.NaN, "-"
     )
 
@@ -132,7 +134,8 @@ class AppState {
         snap = UiSnapshot(
             candles.toList(), engine.zones.toList(), engine.markers.toList(), engine.setups.toList(),
             engine.events.toList(), broker.orders.toList(), broker.trades.toList(),
-            broker.openTrade, broker.pendingOrder, engine.lastPocPx, engine.lastEntryPx,
+            broker.openTrade, broker.pendingOrder, broker.openTrades, broker.pendingOrders,
+            engine.lastPocPx, engine.lastEntryPx,
             engine.lastSlPx, engine.lastTpPx, engine.lastResult
         )
     }
@@ -681,8 +684,9 @@ class AppState {
         dst.balance = src.balance; dst.equity = src.equity
         dst.maxEquity = src.maxEquity; dst.maxDrawdown = src.maxDrawdown
         dst.orderSeq = src.orderSeq; dst.tradeSeq = src.tradeSeq
-        dst.restorePending(src.pendingOrder)
-        dst.restoreOpen(src.openTrade)
+        // v1.4.9: همهٔ سفارش‌ها/پوزیشن‌های فعال کپی شوند.
+        for (o in src.pendingOrders) dst.restorePending(o)
+        for (t in src.openTrades) dst.restoreOpen(t)
     }
 
     /** پاک کردن کامل */

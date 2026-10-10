@@ -235,6 +235,9 @@ object Store {
                 "fills" to t.fills.map { listOf(it.t, it.bi, it.price, it.qty, it.kind, it.pnl) }
             )
         }
+        o["pendingIds"] = b.pendingOrders.map { it.id }
+        o["openIds"] = b.openTrades.map { it.id }
+        // سازگاری با نسخه‌های قبل (تک‌سفارش):
         o["pendingId"] = b.pendingOrder?.id ?: -1L
         o["openId"] = b.openTrade?.id ?: -1L
         return o
@@ -272,8 +275,25 @@ object Store {
             }
             b.trades.add(tr)
         }
-        val pid = m["pendingId"].asL(); if (pid >= 0) b.restorePending(b.orders.firstOrNull { it.id == pid })
-        val oid = m["openId"].asL(); if (oid >= 0) b.restoreOpen(b.trades.firstOrNull { it.id == oid })
+        // پشتیبانی از چند سفارش/پوزیشن (v1.4.9+):
+        val pids = m["pendingIds"]
+        if (pids != null) {
+            for (pid in pids.asList()) {
+                val id = pid.asL()
+                b.orders.firstOrNull { it.id == id }?.let { b.restorePending(it) }
+            }
+        } else {
+            val pid = m["pendingId"].asL(); if (pid >= 0) b.restorePending(b.orders.firstOrNull { it.id == pid })
+        }
+        val oids = m["openIds"]
+        if (oids != null) {
+            for (oid in oids.asList()) {
+                val id = oid.asL()
+                b.trades.firstOrNull { it.id == id }?.let { b.restoreOpen(it) }
+            }
+        } else {
+            val oid = m["openId"].asL(); if (oid >= 0) b.restoreOpen(b.trades.firstOrNull { it.id == oid })
+        }
         return b
     }
 

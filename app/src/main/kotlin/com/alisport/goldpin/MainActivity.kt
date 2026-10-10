@@ -605,13 +605,19 @@ class MainActivity : Activity() {
                         Ui.dp(this@MainActivity, 8f), Ui.dp(this@MainActivity, 1f))
                 })
             }
-            snap.openTrade?.takeIf { it.open }?.let { t ->
-                box.addView(Ui.tv(this, "پوزیشن باز: ${if (t.dir == 1) "خرید" else "فروش"} @ ${Fa.n(t.entry)} · سود/زیان ${Fa.signed(t.pnl())}",
-                    11f, Palette.gold))
+            val opensList = snap.openTrades
+            val pensList = snap.pendingOrders
+            if (opensList.isNotEmpty()) {
+                for (t in opensList) {
+                    box.addView(Ui.tv(this, "پوزیشن #${t.id}: ${if (t.dir == 1) "خرید" else "فروش"} @ ${Fa.n(t.entry)} · سود/زیان ${Fa.signed(t.pnl())}",
+                        11f, Palette.gold))
+                }
             }
-            snap.pendingOrder?.let { o ->
-                box.addView(Ui.tv(this, "سفارش آماده: ${if (o.dir == 1) "خرید لیمیت" else "فروش لیمیت"} @ ${Fa.n(o.price)}",
-                    11f, Palette.accent))
+            if (pensList.isNotEmpty()) {
+                for (o in pensList) {
+                    box.addView(Ui.tv(this, "سفارش آماده #${o.id}: ${if (o.dir == 1) "خرید لیمیت" else "فروش لیمیت"} @ ${Fa.n(o.price)}",
+                        11f, Palette.accent))
+                }
             }
         }
     }
@@ -905,7 +911,8 @@ class MainActivity : Activity() {
         v.addView(numRow("تعداد ردیف‌ها", s.cfg.vpRows.toDouble()) { s.cfg.vpRows = it.toInt(); s.rebuildAsync() })
         v.addView(numRow("هموارسازی (۰-۳)", s.cfg.vpSmooth.toDouble()) { s.cfg.vpSmooth = it.toInt(); s.rebuildAsync() })
         v.addView(numRow("حداقل ردیف یک ناحیه", s.cfg.minZoneRows.toDouble()) { s.cfg.minZoneRows = it.toInt(); s.rebuildAsync() })
-        v.addView(numRow("حداکثر باکس روی چارت", s.cfg.maxZoneBoxes.toDouble()) { s.cfg.maxZoneBoxes = it.toInt() })
+        // §v1.4.9: باکس‌ها با «کلوز از سمت دور» پاک می‌شوند؛ محدودیت تعداد غیرفعال (نامحدود).
+        v.addView(Ui.tv(this, "حداکثر باکس روی چارت: نامحدود (پاک‌سازی با کلوز از سمت دور)", 11f, Palette.dim))
         v.addView(switchRow("نمایش ناحیه‌های ردشده", s.cfg.showRejectedZones) { s.cfg.showRejectedZones = it; s.rebuildAsync() })
         v.addView(switchRow("پاک کردن باکس با کلوز از سمت دور", s.cfg.clearUsedZones) { s.cfg.clearUsedZones = it; s.rebuildAsync() })
         val dists = arrayOf("مثلثی حول Close", "مثلثی حول Typical", "یکنواخت")

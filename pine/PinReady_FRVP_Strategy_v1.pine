@@ -154,6 +154,7 @@ type Setup
     bool   lvUsed      = false
     bool   lvReEntered = false
     int    hvConfBi    = na
+    int    entryBi     = na      // کندلی که ورود در آن پر شد (برای قاعده TP1+ورود یک کندل)
     label  midLbl      = na
     float  entry       = na
     float  sl          = na
@@ -1218,14 +1219,24 @@ if array.size(setups) > 0
                         s.l7 := f_setLine(s.l7, bar_index, low, color.new(color.blue, 0))
                         label.new(bar_index, bull ? low : high, "کندل ولوم زیاد (مارک)", xloc.bar_index, yloc.price, color.new(color.blue, 25), bull ? label.style_label_up : label.style_label_down, color.white, size.tiny)
 
-        // ④ ورود : برگشت به ناحیه ولوم زیاد (پر شدن سفارش لیمیت)
-        //   §۶-۱۷: کلوز آن‌طرف ناحیه HV بعد از مسلح شدن → نقض، سفارش معلق لغو.
+        // ④ انقضا/ورود : بعد از مسلح
         if s.stage == 6 and bar_index > s.hvConfBi
-            if (bull ? close < s.hvL : close > s.hvH)
+            // ④-۰ انقضای سفارش معلق (§4-8):
+            //   الف) قیمت (باز/کلوز) از سقف pinBE (خرید) / کف pinBU (فروش) عبور کند.
+            //   ب) گذشت یک کندل ساختار کامل (n = tfS/tf2).
+            bool pinBreak = bull ? (not na(highestBE) and (high >= highestBE or close >= highestBE)) : (not na(lowestBUpin) and (low <= lowestBUpin or close <= lowestBUpin))
+            int  nBars = math.max(1, math.round(secS / sec2))
+            bool barExpire = not na(s.hvConfBi) and (bar_index - s.hvConfBi) >= nBars
+            bool expired = pinBreak or barExpire
+            string expRsn = pinBreak ? "عبور قیمت از پین مخالف" : "گذشت یک کندل ساختار"
+            // نقض ناحیه HV با **یک تیک از سمت دور (wick)** — سند نهایی §4-8
+            bool hvViol = bull ? low <= s.hvL : high >= s.hvH
+            if expired or hvViol
                 bool wasArmedH = s.stage == 6
                 s.hvBi := na
                 s.runMax := volume
                 s.stage := 4
+                s.lvReEntered := false
                 if wasArmedH and entryPending and not na(trSetup) and trSetup == s
                     strategy.cancel("L")
                     strategy.cancel("S")
@@ -1237,9 +1248,11 @@ if array.size(setups) > 0
                 s.l6 := na
                 s.l7 := na
                 s.l8 := na
+                label.new(bar_index, close, expired ? "انقضا · " + expRsn : "نقض HV (wick)", xloc.bar_index, yloc.price, color.new(color.orange, 30), label.style_label_left, color.white, size.tiny)
             else if (bull ? low <= s.hvH : high >= s.hvL)
                 s.entry := bull ? s.hvH : s.hvL
                 s.stage := 7
+                s.entryBi := bar_index
                 cEntry += 1
                 lastEntryPx := s.entry
                 lastSlPx := s.sl
@@ -1255,6 +1268,7 @@ if array.size(setups) > 0
             bool done = false
             float px = na
             string note = ""
+            bool sameBar = s.entryBi == bar_index  // کندلی که ورود در آن پر شد
             if bull
                 if low <= s.sl
                     done := true
@@ -1265,22 +1279,31 @@ if array.size(setups) > 0
                     px := s.tpx
                     note := "حد سود نهایی (1.272)"
                 else
-                    if not s.be and not na(s.tp1) and high >= s.tp1
+                    // §۶-۲۱: ورود و TP1 در یک کندل → BE خالص (نتیجه صفر)
+                    // §۶-۲۱: ورود و TP1 در یک کندل → BE خالص (نتیجه صفر)
+                    bool sameBarNZ = sameBar and not na(s.tp1) and high >= s.tp1 and low <= s.entry
+                    if sameBarNZ
                         s.be := true
-                        s.sl := s.entry
-                        if not na(s.l9)
-                            line.set_xy1(s.l9, bar_index, s.entry)
-                            line.set_xy2(s.l9, bar_index, s.entry)
-                            line.set_color(s.l9, color.new(color.orange, 0))
-                        label.new(bar_index, s.entry, "TP1 (38%) ✔ · حدضرر = سر‌به‌سر", xloc.bar_index, yloc.price, color.new(color.orange, 20), label.style_label_down, color.white, size.tiny)
-                    //  TP2: if مستقل (else if نباید باشد تا در همان کندل TP1+TP2 ثبت شود)
-                    if s.be and not s.tp2Hit and not na(s.tp2) and high >= s.tp2
-                        s.tp2Hit := true
-                        label.new(bar_index, s.tp2, "TP2 (50%) ✔", xloc.bar_index, yloc.price, color.new(color.orange, 10), label.style_label_down, color.white, size.tiny)
-                    if s.be and low <= s.entry
                         done := true
                         px := s.entry
-                        note := "خروج سر‌به‌سر"
+                        note := "خروج سر‌به‌سر (TP1 و ورود یک کندل)"
+                    if not sameBarNZ
+                        if not s.be and not na(s.tp1) and high >= s.tp1 and not sameBar
+                            s.be := true
+                            s.sl := s.entry
+                            if not na(s.l9)
+                                line.set_xy1(s.l9, bar_index, s.entry)
+                                line.set_xy2(s.l9, bar_index, s.entry)
+                                line.set_color(s.l9, color.new(color.orange, 0))
+                            label.new(bar_index, s.entry, "TP1 (38%) ✔ · حدضرر = سر‌به‌سر", xloc.bar_index, yloc.price, color.new(color.orange, 20), label.style_label_down, color.white, size.tiny)
+                        //  TP2: if مستقل
+                        if s.be and not s.tp2Hit and not na(s.tp2) and high >= s.tp2
+                            s.tp2Hit := true
+                            label.new(bar_index, s.tp2, "TP2 (50%) ✔", xloc.bar_index, yloc.price, color.new(color.orange, 10), label.style_label_down, color.white, size.tiny)
+                        if s.be and low <= s.entry
+                            done := true
+                            px := s.entry
+                            note := "خروج سر‌به‌سر"
             else
                 if high >= s.sl
                     done := true
@@ -1291,21 +1314,28 @@ if array.size(setups) > 0
                     px := s.tpx
                     note := "حد سود نهایی (1.272)"
                 else
-                    if not s.be and not na(s.tp1) and low <= s.tp1
+                    bool sameBarNZ2 = sameBar and not na(s.tp1) and low <= s.tp1 and high >= s.entry
+                    if sameBarNZ2
                         s.be := true
-                        s.sl := s.entry
-                        if not na(s.l9)
-                            line.set_xy1(s.l9, bar_index, s.entry)
-                            line.set_xy2(s.l9, bar_index, s.entry)
-                            line.set_color(s.l9, color.new(color.orange, 0))
-                        label.new(bar_index, s.entry, "TP1 (38%) ✔ · حدضرر = سر‌به‌سر", xloc.bar_index, yloc.price, color.new(color.orange, 20), label.style_label_up, color.white, size.tiny)
-                    if s.be and not s.tp2Hit and not na(s.tp2) and low <= s.tp2
-                        s.tp2Hit := true
-                        label.new(bar_index, s.tp2, "TP2 (50%) ✔", xloc.bar_index, yloc.price, color.new(color.orange, 10), label.style_label_up, color.white, size.tiny)
-                    if s.be and high >= s.entry
                         done := true
                         px := s.entry
-                        note := "خروج سر‌به‌سر"
+                        note := "خروج سر‌به‌سر (TP1 و ورود یک کندل)"
+                    if not sameBarNZ2
+                        if not s.be and not na(s.tp1) and low <= s.tp1 and not sameBar
+                            s.be := true
+                            s.sl := s.entry
+                            if not na(s.l9)
+                                line.set_xy1(s.l9, bar_index, s.entry)
+                                line.set_xy2(s.l9, bar_index, s.entry)
+                                line.set_color(s.l9, color.new(color.orange, 0))
+                            label.new(bar_index, s.entry, "TP1 (38%) ✔ · حدضرر = سر‌به‌سر", xloc.bar_index, yloc.price, color.new(color.orange, 20), label.style_label_up, color.white, size.tiny)
+                        if s.be and not s.tp2Hit and not na(s.tp2) and low <= s.tp2
+                            s.tp2Hit := true
+                            label.new(bar_index, s.tp2, "TP2 (50%) ✔", xloc.bar_index, yloc.price, color.new(color.orange, 10), label.style_label_up, color.white, size.tiny)
+                        if s.be and high >= s.entry
+                            done := true
+                            px := s.entry
+                            note := "خروج سر‌به‌سر"
             if done
                 s.stage := 8
                 cDone += 1

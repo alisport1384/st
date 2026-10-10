@@ -672,7 +672,8 @@ if aggS.closedNow
         for i = 0 to array.size(pins) - 1
             Pin p = array.get(pins, i)
             if p.status == 0 and sb.bi > p.startBi
-                bool dead = p.kind == 1 ? (sb.c < p.ref) : (sb.c > p.ref)
+                // §v1.4.9 سند نهایی: کاندید با **باز یا کلوز** از سطح ابطال می‌میرد (برابری نمی‌کشد).
+                bool dead = p.kind == 1 ? (sb.o < p.ref or sb.c < p.ref) : (sb.o > p.ref or sb.c > p.ref)
                 if dead
                     p.status := -1
                 else
@@ -1087,12 +1088,18 @@ if array.size(setups) > 0
                         s.l7 := f_setLine(s.l7, bar_index, low, color.new(color.blue, 0))
                         label.new(bar_index, bull ? low : high, "کندل ولوم زیاد (مارک)", xloc.bar_index, yloc.price, color.new(color.blue, 25), bull ? label.style_label_up : label.style_label_down, color.white, size.tiny)
 
-        // ④ ورود : برگشت به ناحیه ولوم زیاد
+        // ④ ورود / انقضا : بعد از مسلح (v1.4.9)
         if s.stage == 6 and bar_index > s.hvConfBi
-            if (bull ? close < s.hvL : close > s.hvH)
+            bool pinBrkB = bull and not na(highestBE) and (high >= highestBE or close >= highestBE)
+            bool pinBrkS = not bull and not na(lowestBUpin) and (low <= lowestBUpin or close <= lowestBUpin)
+            int  nBars = math.max(1, math.round(secS / sec2))
+            bool barExp = not na(s.hvConfBi) and (bar_index - s.hvConfBi) >= nBars
+            bool hvWick = bull ? low <= s.hvL : high >= s.hvH
+            if pinBrkB or pinBrkS or barExp or hvWick
                 s.hvBi := na
                 s.runMax := volume
                 s.stage := 4
+                s.lvReEntered := false
                 f_delLine(s.l6)
                 f_delLine(s.l7)
                 s.l6 := na

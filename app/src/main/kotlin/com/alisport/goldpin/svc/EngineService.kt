@@ -163,13 +163,14 @@ class EngineService : Service() {
         }
         val open = s.broker.openTrade
         val pending = s.broker.pendingOrder
+        val nOpen = s.broker.openTrades.size
+        val nPend = s.broker.pendingOrders.size
         val line2 = buildString {
             append("قیمت: ").append(price).append("  |  روند: ").append(trend)
-            if (pending != null && pending.status == OrderStatus.PENDING) {
-                append("  |  سفارش ورود @ ").append(Fa.n(pending.price, 2))
-            }
-            if (open != null && open.open) {
-                append("  |  پوزیشن باز: ").append(Fa.signed(open.pnl(), 2))
+            if (nPend > 0) append("  |  سفارش معلق: ").append(nPend).append(" تا @").append(Fa.n(pending?.price ?: Double.NaN, 2))
+            if (nOpen > 0) {
+                val netPnl = s.broker.openTrades.sumOf { it.pnl() }
+                append("  |  پوزیشن باز: ").append(nOpen).append(" تا ").append(Fa.signed(netPnl, 2))
             }
         }
         val err = s.lastFeedError

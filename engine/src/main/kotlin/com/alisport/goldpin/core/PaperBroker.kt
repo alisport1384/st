@@ -9,14 +9,17 @@ import kotlin.math.min
 //  کارگزار کاغذی (Paper) — معادل ⑮ در Pine
 //  ثبت سفارش لیمیت روی لبهٔ ناحیهٔ ولوم زیاد ، پر شدن ، خروج پله‌ای ۳۳/۳۳/۳۴ ،
 //  سر‌به‌سر بعد از TP1 ، انقضای سفارش ، و محاسبهٔ سود/زیان به دلار و R.
+//
+//  از v1.4.9 (تصمیم مالک Q4) چندین سفارش/پوزیشن هم‌زمان تا سقف maxSetups مجازند
+//  (در هر دو جهت، هرم).
 // ═══════════════════════════════════════════════════════════════════════════════
 class PaperBroker(private val cfg: Settings) {
 
     val orders = ArrayList<Order>()
     val trades = ArrayList<Trade>()
 
-    var balance = cfg.initialEquity          // موجودی تحقق‌یافته
-    var equity = cfg.initialEquity           // موجودی + سود/زیان باز
+    var balance = cfg.initialEquity
+    var equity = cfg.initialEquity
     var maxEquity = cfg.initialEquity
     var maxDrawdown = 0.0
     var orderSeq = 0L
@@ -24,57 +27,76 @@ class PaperBroker(private val cfg: Settings) {
     var lastError: String? = null
     var engine: Engine? = null
 
-    /** قلاب‌های لاگر و هشدار (اپ وصل می‌کند) */
+    /** چند سفارش/پوزیشن فعال هم‌زمان (تصمیم ۲۰۲۶-۱۰-۱۰). */
+    private val pendings = ArrayList<Order>()
+    private val opens = ArrayList<Trade>()
+
+    /** سازگاری با کدهای قدیمی که یک سفارش/پوزیشن انتظار داشتند (اولین مورد). */
+    val hasOpenTrade: Boolean get() = opens.isNotEmpty()
+    val hasPending: Boolean get() = pendings.isNotEmpty()
+    val openTrade: Trade? get() = opens.firstOrNull { it.open }
+    val pendingOrder: Order? get() = pendings.firstOrNull()
+    val openTrades: List<Trade> get() = opens.filter { it.open }
+    val pendingOrders: List<Order> get() = pendings.toList()
+
     var logSink: ((String, String, String?) -> Unit)? = null
     var alertSink: ((String, String, String) -> Unit)? = null
 
     private fun lg(cat: String, msg: String, data: String? = null) { logSink?.invoke(cat, msg, data) }
-
     private fun fmt(v: Double): String = if (v.isNaN()) "-" else String.format("%.2f", v)
     private fun alarm(kind: String, title: String, body: String) { alertSink?.invoke(kind, title, body) }
 
-    private var pending: Order? = null
-    private var open: Trade? = null
-
-    val hasOpenTrade: Boolean get() = open != null
-    val hasPending: Boolean get() = pending != null
-    val openTrade: Trade? get() = open
-    val pendingOrder: Order? get() = pending
-
     fun reset() {
-        orders.clear(); trades.clear()
+        orders.clear(); trades.clear(); pendings.clear(); opens.clear()
         balance = cfg.initialEquity; equity = cfg.initialEquity
         maxEquity = cfg.initialEquity; maxDrawdown = 0.0
-        pending = null; open = null; lastError = null
+        lastError = null
     }
 
-    /** حجم بر اساس ریسک یا درصد سرمایه — معادل f_qty */
+    /** مارجینِ در استفاده توسط سفارش‌های معلق و پوزیشن‌های باز. */
+    private fun usedMargin(px: Double): Double {
+        var u = 0.0
+        for (o in pendings) u += o.qty * o.price
+        for (t in opens) if (t.open) u += t.fills.filter { it.kind == "ENTRY" }.sumOf { it.qty } * t.entry
+        return u
+    }
+
+    /** حجم بر اساس ریسک یا درصد سرمایه — با درنظرگرفتن مارجین مصرف‌شده. */
     fun qtyFor(px: Double, sl: Double): Double {
         if (px <= 0) return 0.0
-        val eq = if (hasOpenTrade) equity else balance
         val risk = abs(px - sl)
+        // از equity (نه balance) استفاده می‌کنیم تا چند پوزیشن باز جمع شوند.
+        val eq = equity
         var q = if (cfg.useRiskPct) {
             if (risk > 0) eq * cfg.riskPct / 100.0 / risk else 0.0
         } else {
             eq * cfg.equityPct / 100.0 / px
         }
-        val capQty = eq * cfg.maxLeverage / px
+        // سقف مارجین کل نسبت به equity × maxLeverage
+        val capMargin = eq * cfg.maxLeverage
+        val availMargin = max(0.0, capMargin - usedMargin(px))
+        val capQty = availMargin / px
         q = min(q, capQty)
         if (cfg.roundQty) q = floor(q)
         return max(q, 0.0)
     }
 
-    /** ثبت سفارش ورود (در لحظهٔ مسلح شدن). مثل Pine: فقط اگر پوزیشن و سفارش بازی نباشد.
-     *  @return `true` اگر سفارش واقعاً ثبت شد؛ `false` اگر رد شد (مثلاً سفارش/پوزیشن باز هست). */
+    /** ثبت سفارش لیمیت — چند سفارش تا سقف maxSetups مجازند. */
     fun registerLimit(s: Setup, bar: Candle): Boolean {
-        if (pending != null || open != null) {
-            lastError = "سفارش جدید ثبت نشد (پوزیشن/سفارش باز)"
+        val activeCount = pendings.size + opens.count { it.open }
+        if (activeCount >= cfg.maxSetups) {
+            lastError = "تعداد سفارش/پوزیشن فعال به سقف maxSetups=${cfg.maxSetups} رسید"
+            return false
+        }
+        // هم‌پوشانی روی یک ستاپ: اگر همین setupId در حال حاضر سفارش معلق دارد، رد شود.
+        if (pendings.any { it.setupId == s.id }) {
+            lastError = "برای ستاپ #${s.id} قبلاً سفارش معلق ثبت شده"
             return false
         }
         val entryPx = if (s.bull) s.hvH else s.hvL
         val qty = qtyFor(entryPx, s.sl)
         if (qty <= 0) {
-            lastError = "حجم صفر بود"
+            lastError = "حجم صفر بود (مارجین کافی نیست یا حدضرر صفر)"
             return false
         }
         val o = Order(
@@ -85,21 +107,14 @@ class PaperBroker(private val cfg: Settings) {
         )
         s.orderId = o.id
         orders.add(o)
-        pending = o
+        pendings.add(o)
         lg("ORDER", "سفارش ورود ثبت شد (آماده) · ستاپ #${s.id}",
-            "type=${if (s.dir == 1) "BUY_LIMIT" else "SELL_LIMIT"} price=${fmt(entryPx)} sl=${fmt(s.sl)} tp1=${fmt(s.tp1)} tp2=${fmt(s.tp2)} tp=${fmt(s.tpx)} qty=${fmt(qty)} bar=${bar.bi}")
+            "type=${if (s.dir == 1) "BUY_LIMIT" else "SELL_LIMIT"} price=${fmt(entryPx)} sl=${fmt(s.sl)} tp1=${fmt(s.tp1)} tp2=${fmt(s.tp2)} tp=${fmt(s.tpx)} qty=${fmt(qty)} active=$activeCount+1/${cfg.maxSetups} bar=${bar.bi}")
         alarm(AlertKind.ARMED, if (s.dir == 1) "سفارش خرید آماده شد" else "سفارش فروش آماده شد",
             "ستاپ #${s.id} · ورود ${fmt(entryPx)} · حدضرر ${fmt(s.sl)} · حدسود ${fmt(s.tpx)} · حجم ${fmt(qty)}")
         return true
     }
 
-    /**
-     * لغو سفارش.
-     * @param status دلیل لغو را دقیق نگه می‌دارد: انقضا [OrderStatus.CANCELLED_EXPIRED] ،
-     *        لغو دستی [OrderStatus.CANCELLED_MANUAL] ، بقیه [OrderStatus.CANCELLED_INVALID].
-     *        (پیش‌تر همهٔ لغوها CANCELLED_INVALID می‌شدند و تب سفارش‌ها سفارش منقضی را
-     *        «لغو» نشان می‌داد، چون هیچ‌وقت CANCELLED_EXPIRED ست نمی‌شد.)
-     */
     fun cancel(
         order: Order,
         reason: String,
@@ -111,53 +126,32 @@ class PaperBroker(private val cfg: Settings) {
         order.status = status
         order.cancelReason = reason
         order.closedT = t
-        if (pending?.id == order.id) pending = null
-        if (open?.orderId == order.id && open?.open == true) {
-            // ۷-۲: معاملهٔ باز هرگز به‌زور بسته نمی‌شود — فقط سیستم مدیریتش می‌کند
-            lg("ORDER", "⚠ لغو روی معاملهٔ باز — بسته نشد", "id=${order.id}")
-        }
+        pendings.removeAll { it.id == order.id }
+        // معامله باز را نمی‌بندیم (همان منطق ۷-۲).
     }
 
     /**
      * ستاپ باطل شد.
-     *
-     * docs/19 بند ۵-۳ — **تصمیم کارفرما**: «خودِ سفارش‌های باز مسئول تصمیم‌گیری هستند؛
-     * سیستم فقط مدیریتشان می‌کند.»
-     *
-     * پس سفارش **معلق** لغو می‌شود (چون هنوز وارد نشده و ستاپش مرده)، ولی معاملهٔ
-     * **پر‌شده هرگز به‌زور بسته نمی‌شود**. تا تعیین تکلیف خودش می‌رود: همهٔ حد سودها،
-     * سر‌به‌سر، یا حد ضرر.
-     *
-     * ⚠ پیش‌تر این متد معاملهٔ باز را هم می‌بست («خروج همگام»). آن رفتار حذف شد.
+     * سفارش معلق لغو می‌شود؛ معاملهٔ پرشده تا حد سود/ضرر می‌رود.
      */
     fun onSetupInvalidated(s: Setup) {
-        val o = orders.firstOrNull { it.id == s.orderId } ?: return
-        if (o.status == OrderStatus.PENDING) cancel(o, "ستاپ باطل شد", o.placedT, o.placedBi)
+        val o = orders.lastOrNull { it.setupId == s.id && it.status == OrderStatus.PENDING }
+        if (o != null) cancel(o, "ستاپ باطل شد", o.placedT, o.placedBi)
     }
 
-    /** بازگردانی سفارش معلق از فایل ذخیره‌شده */
-    fun restorePending(o: Order?) { pending = o }
-
-    /** بازگردانی پوزیشن باز از فایل ذخیره‌شده */
-    fun restoreOpen(t: Trade?) { open = t }
+    fun restorePending(o: Order?) { if (o != null && !pendings.any { it.id == o.id }) pendings.add(o) }
+    fun restoreOpen(t: Trade?) { if (t != null && t.open && !opens.any { it.id == t.id }) opens.add(t) }
 
     fun cancelPendingManually(t: Long, bi: Int) {
-        pending?.let { cancel(it, "لغو دستی توسط کاربر", t, bi, OrderStatus.CANCELLED_MANUAL) }
+        ArrayList(pendings).forEach { cancel(it, "لغو دستی توسط کاربر", t, bi, OrderStatus.CANCELLED_MANUAL) }
     }
 
-    /** پردازش کندل: پر شدن سفارش + مدیریت پوزیشن. */
+    /** پردازش یک کندل برای همهٔ سفارش‌ها و پوزیشن‌های باز. */
     fun onBar(cd: Candle, live: Boolean = false) {
-        // ① پر شدن سفارش لیمیت
-        //    ⚠ مطابق §۲-۸ سند: «سفارش ورود لیمیت روی لبه ناحیه ولوم زیاد ... هر کندل
-        //    دوباره صادر می‌شود تا پر شود یا مهلت تمام شود.» سفارش در همان کندلی که
-        //    مسلح شده (hvConfBi == cd.bi) نباید پر شود — موتور در آن کندل تازه وارد
-        //    مرحله ۶ می‌شود و «برگشت» به لبه از کندل بعد شروع می‌شود. این با خودِ
-        //    موتور (trigger2Engine مرحله ۶ که curBi > hvConfBi می‌خواهد) هم‌خوان است.
-        //    بدون این guard، برای BUY limit اگر کندل HV confirmation کفی پایین‌تر یا
-        //    مساوی hvH داشته باشد، کارگزار در همان کندل پر می‌کند — خلاف «برگشت به
-        //    لبه».
-        val p = pending
-        if (p != null) {
+        // ① پر شدن سفارش‌های لیمیت (روی یک کپی از pendings تا در fillEntry تغییرات لیست به iteration آسیب نزند)
+        val pendingSnapshot = ArrayList(pendings)
+        for (p in pendingSnapshot) {
+            if (p.status != OrderStatus.PENDING) continue
             val touched = if (p.dir == 1) cd.l <= p.price else cd.h >= p.price
             val barsWaiting = cd.bi - p.placedBi
             val sameBarAsArmed = cd.bi == p.placedBi
@@ -170,10 +164,11 @@ class PaperBroker(private val cfg: Settings) {
                     "پس از $barsWaiting کندل پر نشد · قیمت ${fmt(p.price)}")
             }
         }
-        // ② مدیریت پوزیشن باز
-        val t = open
-        if (t != null && t.open) manageBar(t, cd)
-        // ③ به‌روزرسانی سود/زیان شناور
+        // ② مدیریت پوزیشن‌های باز (کپی تا manageBar کلوز نکند و iteration نشکند)
+        for (t in ArrayList(opens)) {
+            if (t.open) manageBar(t, cd)
+        }
+        // ③ به‌روزرسانی موجودی
         refreshEquity(cd)
     }
 
@@ -181,7 +176,7 @@ class PaperBroker(private val cfg: Settings) {
         o.status = OrderStatus.FILLED
         o.filledT = cd.t
         o.filledBi = cd.bi
-        pending = null
+        pendings.removeAll { it.id == o.id }
         val tr = Trade(
             id = tradeSeq++, orderId = o.id, setupId = o.setupId, dir = o.dir,
             entryT = cd.t, entryBi = cd.bi, entry = o.price,
@@ -190,7 +185,7 @@ class PaperBroker(private val cfg: Settings) {
         )
         tr.fills.add(Fill(cd.t, cd.bi, o.price, o.qty, "ENTRY", 0.0))
         trades.add(tr)
-        open = tr
+        opens.add(tr)
         lg("TRADE", "سفارش پر شد → ورود انجام شد · معامله #${tr.id}",
             "dir=${if (tr.dir == 1) "BUY" else "SELL"} entry=${fmt(tr.entry)} sl=${fmt(tr.sl0)} tp=${fmt(tr.tpX)} qty=${fmt(tr.qty)} bar=${cd.bi}")
         alarm(AlertKind.FILLED, if (tr.dir == 1) "ورود خرید انجام شد" else "ورود فروش انجام شد",
@@ -207,7 +202,6 @@ class PaperBroker(private val cfg: Settings) {
         val remaining = t.qty - usedQty
 
         // §۶-۲۱: ورود و TP1 در یک کندل → خروج سر‌به‌سر خالص (نتیجه صفر).
-        // TP1 پاره‌پاره ثبت نمی‌شود؛ کل پوزیشن در قیمت ورود بسته می‌شود.
         if (sameEntryBar && !t.tp1.isNaN()) {
             val tp1Hit = if (bull) cd.h >= t.tp1 else cd.l <= t.tp1
             val entryRetraced = if (bull) cd.l <= t.entry else cd.h >= t.entry
@@ -218,7 +212,6 @@ class PaperBroker(private val cfg: Settings) {
             }
         }
 
-        // ترتیب محافظه‌کارانه: ابتدا حدضرر/سر‌به‌سر ، بعد حدسود نهایی ، بعد پله‌ها
         val hitStop = if (bull) cd.l <= slLvl else cd.h >= slLvl
         if (hitStop) {
             closeAll(t, slLvl, cd.t, cd.bi, if (t.be) "خروج سر‌به‌سر" else "حد ضرر")
@@ -231,11 +224,10 @@ class PaperBroker(private val cfg: Settings) {
         }
         val tp1Done = t.fills.any { it.kind == "TP1" }
         if (!tp1Done && !t.tp1.isNaN() && !sameEntryBar) {
-            // در کندل ورود، TP1 را پاره‌پاره نمی‌زنیم — قاعدهٔ بالا خروج BE خالص را انجام می‌دهد.
             val hit = if (bull) cd.h >= t.tp1 else cd.l <= t.tp1
             if (hit) {
                 addExit(t, cd, t.tp1, min(q1, remaining), "TP1")
-                t.be = true                    // حدضرر به سر‌به‌سر منتقل می‌شود
+                t.be = true
             }
         }
         val remainingNow = t.qty - t.fills.filter { it.kind != "ENTRY" }.sumOf { it.qty }
@@ -283,32 +275,30 @@ class PaperBroker(private val cfg: Settings) {
         }
         t.exitT = time; t.exitBi = bi; t.exitPx = px
         t.reason = reason
-        open = null
+        opens.removeAll { it.id == t.id }
         lg("TRADE", "معامله #${t.id} بسته شد", "reason=$reason exit=${fmt(px)} pnl=${fmt(t.pnl())} R=${fmt(t.rMultiple())} موجودی=${fmt(balance)}")
         val pnl = t.pnl()
         alarm(AlertKind.CLOSE, "معامله بسته شد · ${t.reason}",
             "معامله #${t.id} · خروج ${fmt(px)} · سود/زیان ${fmt(pnl)} دلار · ${fmt(t.rMultiple())}R")
     }
 
-    /** به‌روزرسانی موجودی و سود/زیان شناور با قیمت جاری. */
+    /** به‌روزرسانی سود/زیان شناور مجموع همهٔ پوزیشن‌های باز. */
     fun refreshEquity(cd: Candle) {
-        val t = open
-        equity = if (t != null && t.open) {
+        var unreal = 0.0
+        for (t in opens) {
+            if (!t.open) continue
             val used = t.fills.filter { it.kind != "ENTRY" }.sumOf { it.qty }
             val rem = t.qty - used
-            val unreal = if (t.dir == 1) (cd.c - t.entry) * rem * t.contractSize
-            else (t.entry - cd.c) * rem * t.contractSize
-            balance + unreal
-        } else balance
+            unreal += if (t.dir == 1) (cd.c - t.entry) * rem * t.contractSize
+                     else (t.entry - cd.c) * rem * t.contractSize
+        }
+        equity = balance + unreal
         maxEquity = max(maxEquity, equity)
         val dd = maxEquity - equity
         if (dd > maxDrawdown) maxDrawdown = dd
     }
 
-    fun openTradePnl(): Double {
-        val t = open ?: return 0.0
-        return t.fills.sumOf { it.pnl }
-    }
+    fun openTradePnl(): Double = opens.filter { it.open }.sumOf { it.pnl() }
 
     fun closedTrades(): List<Trade> = trades.filter { !it.open }
 }
