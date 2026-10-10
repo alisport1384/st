@@ -413,25 +413,28 @@ class Engine(val cfg: Settings) {
         //   صورت نبود توالی، clearBUpin / clearBEpin صدا زده می‌شود.
         // · مقایسه‌ها اکید هستند (تساوی نمی‌کُشد).
         if (buActive && !lastBUpinRef.isNaN() && sb.bi > 0) {
-            val crossed = (sb.o < lastBUpinRef || sb.c < lastBUpinRef)
-            // شکست کف کندل در بلوک trend هندل می‌شود (به چرخش یا حذف کامل پین
-            // بسته به توالی)، این‌جا فقط حالت زیر-ref و بالای-کف را می‌گیریم.
-            val closedBelowLow = !lastBUpin.isNaN() && sb.c < lastBUpin
-            if (crossed && !closedBelowLow) {
+            // §4-3 سند نهایی: باز یا کلوز از ref عبور کند OR باز یا کلوز از کف پین عبور کند.
+            //   اگر pinBE ثبت شده، این چرخش است (در بلوک trend هندل می‌شود).
+            val crossedRef = (sb.o < lastBUpinRef || sb.c < lastBUpinRef)
+            val crossedLow = !lastBUpin.isNaN() && (sb.o < lastBUpin || sb.c < lastBUpin || sb.l <= lastBUpin)
+            // اگر pinBE فعال است، شکست کف pinBU = چرخش روند (توسط بلوک trend هندل می‌شود).
+            val isRotation = beActive && crossedLow
+            if ((crossedRef || crossedLow) && !isRotation) {
                 clearBUpin()
-                addMarker(sb.bi, lastBUpin, 10, "pinBU بی‌اعتبار شد (زیر ref)")
+                addMarker(sb.bi, lastBUpin, 10, "pinBU بی‌اعتبار شد")
                 lg("ENGINE", "pinBU بی‌اعتبار شد — پین کامل پاک شد",
-                    "ref=${f2(lastBUpinRef)} lo=${f2(lastBUpin)} close=${f2(sb.c)} open=${f2(sb.o)}")
+                    "ref=${f2(lastBUpinRef)} lo=${f2(lastBUpin)} o=${f2(sb.o)} c=${f2(sb.c)}")
             }
         }
         if (beActive && !lastBEpinRef.isNaN() && sb.bi > 0) {
-            val crossed = (sb.o > lastBEpinRef || sb.c > lastBEpinRef)
-            val closedAboveHigh = !lastBEpin.isNaN() && sb.c > lastBEpin
-            if (crossed && !closedAboveHigh) {
+            val crossedRef = (sb.o > lastBEpinRef || sb.c > lastBEpinRef)
+            val crossedHigh = !lastBEpin.isNaN() && (sb.o > lastBEpin || sb.c > lastBEpin || sb.h >= lastBEpin)
+            val isRotation = buActive && crossedHigh
+            if ((crossedRef || crossedHigh) && !isRotation) {
                 clearBEpin()
-                addMarker(sb.bi, lastBEpin, 10, "pinBE بی‌اعتبار شد (بالای ref)")
+                addMarker(sb.bi, lastBEpin, 10, "pinBE بی‌اعتبار شد")
                 lg("ENGINE", "pinBE بی‌اعتبار شد — پین کامل پاک شد",
-                    "ref=${f2(lastBEpinRef)} hi=${f2(lastBEpin)} close=${f2(sb.c)} open=${f2(sb.o)}")
+                    "ref=${f2(lastBEpinRef)} hi=${f2(lastBEpin)} o=${f2(sb.o)} c=${f2(sb.c)}")
             }
         }
 
